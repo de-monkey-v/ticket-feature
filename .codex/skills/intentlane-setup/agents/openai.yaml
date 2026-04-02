@@ -1,0 +1,4 @@
+interface:
+  display_name: "Intentlane Setup"
+  short_description: "Guide Intentlane project setup safely"
+  default_prompt: "Use $intentlane-setup to ask the right setup questions, generate a safe `.env`, and get this repository running."
