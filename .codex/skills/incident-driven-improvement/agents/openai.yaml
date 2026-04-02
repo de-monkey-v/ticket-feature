@@ -1,0 +1,4 @@
+interface:
+  display_name: "Incident Improvement"
+  short_description: "Review incidents and harden the system"
+  default_prompt: "Use $incident-driven-improvement to inspect stored incidents, find recurring failures, and implement the smallest reliable system fix."

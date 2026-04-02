@@ -1,0 +1,181 @@
+{
+  "defaultProjectId": "intentlane-codex",
+  "projects": [
+    {
+      "id": "intentlane-codex",
+      "label": "Intentlane",
+      "path": ".",
+      "verificationCommands": [
+        {
+          "id": "typecheck",
+          "label": "Typecheck",
+          "command": "pnpm typecheck",
+          "timeoutMs": 120000,
+          "required": true
+        },
+        {
+          "id": "test",
+          "label": "Test",
+          "command": "pnpm test",
+          "timeoutMs": 120000,
+          "required": true
+        },
+        {
+          "id": "build",
+          "label": "Build",
+          "command": "pnpm build",
+          "timeoutMs": 180000,
+          "required": true
+        }
+      ]
+    }
+  ],
+  "flows": {
+    "explain": {
+      "promptFile": "prompts/explain.txt",
+      "model": "gpt-5.4",
+      "reasoningEffort": "medium",
+      "serviceTier": "fast"
+    },
+    "requests": {
+      "screening": {
+        "promptFile": "prompts/request-screening.txt",
+        "model": "gpt-5.3-codex-spark",
+        "serviceTier": "fast"
+      }
+    },
+      "ticket": {
+        "coordinator": {
+          "enabled": true,
+          "promptFile": "prompts/ticket-coordinator.txt",
+          "model": "gpt-5.4-mini",
+          "agent": {
+            "role": "coordinator",
+            "displayName": "Sisyphus"
+          },
+          "reasoningEffort": "medium",
+          "serviceTier": "fast",
+          "sandboxMode": "read-only",
+          "approvalPolicy": "never",
+          "networkAccessEnabled": false
+        },
+        "categories": [
+        {
+          "id": "feature",
+          "label": "Feature Add",
+          "description": "새 기능 추가를 위한 전체 구현 플로우",
+          "steps": ["analyze", "plan", "implement", "verify", "review", "ready"]
+        },
+        {
+          "id": "bugfix",
+          "label": "Bug Fix",
+          "description": "버그 수정과 회귀 검증 중심 플로우",
+          "steps": ["analyze", "plan", "implement", "verify", "review", "ready"]
+        },
+        {
+          "id": "change",
+          "label": "Feature Change",
+          "description": "기존 기능 변경을 위한 분석/검증 플로우",
+          "steps": ["analyze", "plan", "implement", "verify", "review", "ready"]
+        },
+        {
+          "id": "docs",
+          "label": "Docs",
+          "description": "문서 작업에 맞춘 경량 플로우",
+          "steps": ["analyze", "plan", "implement", "review", "ready"]
+        }
+      ],
+      "steps": [
+        {
+          "id": "analyze",
+          "name": "Analyze",
+          "agent": {
+            "role": "planner",
+            "displayName": "Prometheus"
+          },
+          "kind": "agent",
+          "runMode": "automatic",
+          "promptFile": "prompts/ticket-analyze.txt",
+          "requiresApproval": false,
+          "maxAttempts": 3,
+          "sandboxMode": "read-only",
+          "approvalPolicy": "never",
+          "networkAccessEnabled": false,
+          "reasoningEffort": "medium"
+        },
+        {
+          "id": "plan",
+          "name": "Plan",
+          "agent": {
+            "role": "planner",
+            "displayName": "Prometheus"
+          },
+          "kind": "agent",
+          "runMode": "automatic",
+          "promptFile": "prompts/ticket-plan.txt",
+          "requiresApproval": false,
+          "maxAttempts": 3,
+          "sandboxMode": "read-only",
+          "approvalPolicy": "never",
+          "networkAccessEnabled": false,
+          "reasoningEffort": "medium"
+        },
+        {
+          "id": "implement",
+          "name": "Implement",
+          "agent": {
+            "role": "builder",
+            "displayName": "Hephaestus"
+          },
+          "kind": "agent",
+          "runMode": "automatic",
+          "promptFile": "prompts/ticket-implement.txt",
+          "requiresApproval": false,
+          "maxAttempts": 3,
+          "sandboxMode": "workspace-write",
+          "approvalPolicy": "never",
+          "networkAccessEnabled": false,
+          "reasoningEffort": "high"
+        },
+        {
+          "id": "verify",
+          "name": "Verify",
+          "agent": {
+            "role": "verifier",
+            "displayName": "Sisyphus"
+          },
+          "kind": "verification",
+          "runMode": "automatic",
+          "requiresApproval": false
+        },
+        {
+          "id": "review",
+          "name": "Review",
+          "agent": {
+            "role": "reviewer",
+            "displayName": "Atlas"
+          },
+          "kind": "agent",
+          "runMode": "automatic",
+          "promptFile": "prompts/ticket-review.txt",
+          "requiresApproval": false,
+          "sandboxMode": "read-only",
+          "approvalPolicy": "never",
+          "networkAccessEnabled": false,
+          "reasoningEffort": "medium"
+        },
+        {
+          "id": "ready",
+          "name": "Ready",
+          "agent": {
+            "role": "coordinator",
+            "displayName": "Sisyphus"
+          },
+          "kind": "terminal",
+          "runMode": "display",
+          "requiresApproval": false
+        }
+      ]
+    }
+  }
+}

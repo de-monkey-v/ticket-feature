@@ -1,0 +1,42 @@
+{
+  "name": "intentlane-codex",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"pnpm dev:server\" \"pnpm dev:worker\" \"pnpm dev:web\"",
+    "dev:server": "INTENTLANE_CODEX_RUNNER_ROLE=api tsx watch src/server/api.ts",
+    "dev:worker": "INTENTLANE_CODEX_RUNNER_ROLE=worker tsx watch src/server/worker.ts",
+    "dev:web": "vite",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "node dist/server/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-server-tests.mjs"
+  },
+  "packageManager": "pnpm@10.28.1",
+  "dependencies": {
+    "@hono/node-server": "^1.19.11",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@openai/codex-sdk": "^0.116.0",
+    "hono": "^4.12.8",
+    "mermaid": "^11.13.0",
+    "nanoid": "^5.1.7",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "tailwindcss": "^4.2.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.1"
+  }
+}
