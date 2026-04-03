@@ -5,6 +5,7 @@ import {
   startExplainBackgroundRun,
   startExplainRequestDraftRun,
   stopBackgroundRun,
+  updateChatSettings,
   updateExplainSettings,
   type BackgroundRunKind,
   type BackgroundRunStatus,
@@ -17,6 +18,7 @@ import {
   shouldBypassRequestInterceptForExplain,
   type ChatMessageRecord,
 } from '../lib/chat-session'
+import { CHAT_INITIAL_SCROLL_TARGET_OPTIONS, getLastUserMessageId } from '../lib/chat-scroll'
 import {
   DEFAULT_EXPLAIN_TEXT_EFFECT,
   EXPLAIN_TEXT_EFFECT_OPTIONS,
@@ -495,6 +497,7 @@ export function ChatView({
   const [now, setNow] = useState(() => Date.now())
   const scrollViewportRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const userMessageRefs = useRef(new Map<string, HTMLDivElement>())
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const threadIdRef = useRef<string | undefined>(undefined)
   const activeThreadKeyRef = useRef('')
@@ -507,10 +510,12 @@ export function ChatView({
   const pendingDeltaRef = useRef('')
   const pendingFlushTimerRef = useRef<number | null>(null)
   const pendingDraftSourceSignatureRef = useRef('')
+  const pendingInitialScrollTargetRef = useRef<AppConfig['chat']['initialScrollTarget'] | null>(null)
+  const skipAutoScrollRef = useRef(false)
   const { startEventStream, abort } = useSSE()
   const selectedModelCapability =
     config.explain.availableModels.find((entry) => entry.id === model) ?? config.explain.availableModels[0]
-  const canManageExplainSettings = config.auth.session.isAdmin
+  const canManageExplainSettings = Boolean(projectId)
   const canCreateRequests = config.auth.session.isAdmin || config.auth.session.permissions.includes('requests')
   const selectedThread =
     explainState?.threads.find((thread) => thread.id === (selectedExplainThreadId || explainState.selectedThreadId)) ?? null
@@ -541,6 +546,38 @@ export function ChatView({
     }
 
     bottomRef.current?.scrollIntoView({ block: 'end' })
+  }
+
+  const registerUserMessageAnchor = (messageId: string) => (node: HTMLDivElement | null) => {
+    if (node) {
+      userMessageRefs.current.set(messageId, node)
+      return
+    }
+
+    userMessageRefs.current.delete(messageId)
+  }
+
+  const scrollToLastUserMessage = () => {
+    const targetMessageId = getLastUserMessageId(messages)
+    if (!targetMessageId) {
+      return false
+    }
+
+    const target = userMessageRefs.current.get(targetMessageId)
+    if (!target) {
+      return false
+    }
+
+    target.scrollIntoView({ block: 'start' })
+    return true
+  }
+
+  const applyInitialScrollTarget = (target: AppConfig['chat']['initialScrollTarget']) => {
+    if (target === 'last_user_message' && scrollToLastUserMessage()) {
+      return
+    }
+
+    scrollToBottom()
   }
 
   const clearPendingDeltaFlushTimer = () => {
@@ -726,6 +763,7 @@ export function ChatView({
     setDrafts(nextDrafts)
 
     if (contextChanged) {
+      pendingInitialScrollTargetRef.current = config.chat.initialScrollTarget
       setInput(nextComposerDraft)
       setRequestInterceptInput(null)
       setEditingSession(null)
@@ -820,6 +858,22 @@ export function ChatView({
   }, [activeRunId, drafts, explainState, input, messages, onExplainStateChange, threadId])
 
   useLayoutEffect(() => {
+    const pendingInitialScrollTarget = pendingInitialScrollTargetRef.current
+    if (!pendingInitialScrollTarget) {
+      return
+    }
+
+    applyInitialScrollTarget(pendingInitialScrollTarget)
+    pendingInitialScrollTargetRef.current = null
+    skipAutoScrollRef.current = true
+  }, [drafts, messages])
+
+  useLayoutEffect(() => {
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false
+      return
+    }
+
     scrollToBottom()
   }, [messages, drafts, streamStatus.phase])
 
@@ -1496,9 +1550,26 @@ export function ChatView({
   }
 
   const persistExplainSettings = async (nextModel: string, nextReasoningEffort: typeof reasoningEffort) => {
+    if (!projectId) {
+      return
+    }
+
     await updateExplainSettings({
+      projectId,
       model: nextModel,
       reasoningEffort: nextReasoningEffort,
+    })
+    await onConfigUpdated()
+  }
+
+  const persistChatSettings = async (nextInitialScrollTarget: AppConfig['chat']['initialScrollTarget']) => {
+    if (!projectId) {
+      return
+    }
+
+    await updateChatSettings({
+      projectId,
+      initialScrollTarget: nextInitialScrollTarget,
     })
     await onConfigUpdated()
   }
@@ -1836,6 +1907,21 @@ export function ChatView({
               ))}
             </select>
             <select
+              aria-label="Chat initial scroll target"
+              value={config.chat.initialScrollTarget}
+              disabled={isStreaming || isGeneratingDraft || !projectId}
+              onChange={async (e) => {
+                await persistChatSettings(e.target.value as AppConfig['chat']['initialScrollTarget'])
+              }}
+              className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {CHAT_INITIAL_SCROLL_TARGET_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
               aria-label="Explain text effect"
               value={textEffect}
               disabled={isStreaming || isGeneratingDraft}
@@ -1889,17 +1975,18 @@ export function ChatView({
                   isStreaming && message.role === 'assistant' && index === messages.length - 1
 
                 return (
-                  <ChatMessage
-                    key={message.id}
-                    role={message.role}
-                    content={message.content}
-                    canEdit={message.role === 'user' && !isStreaming}
-                    onEdit={message.role === 'user' ? () => beginEdit(message.id) : undefined}
-                    isPending={isPendingAssistant}
-                    pendingLabel={isPendingAssistant ? streamStatus.label : undefined}
-                    pendingDetail={isPendingAssistant ? statusMeta : undefined}
-                    streamTextEffect={isPendingAssistant ? textEffect : 'plain'}
-                  />
+                  <div key={message.id} ref={message.role === 'user' ? registerUserMessageAnchor(message.id) : undefined}>
+                    <ChatMessage
+                      role={message.role}
+                      content={message.content}
+                      canEdit={message.role === 'user' && !isStreaming}
+                      onEdit={message.role === 'user' ? () => beginEdit(message.id) : undefined}
+                      isPending={isPendingAssistant}
+                      pendingLabel={isPendingAssistant ? streamStatus.label : undefined}
+                      pendingDetail={isPendingAssistant ? statusMeta : undefined}
+                      streamTextEffect={isPendingAssistant ? textEffect : 'plain'}
+                    />
+                  </div>
                 )
               })}
               {drafts.length > 0 ? (

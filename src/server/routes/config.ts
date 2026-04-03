@@ -1,9 +1,10 @@
 import { Hono } from 'hono'
-import { getAuthSession, requireAdmin } from '../lib/auth.js'
+import { getAuthSession, requireAdmin, requireProjectPermission } from '../lib/auth.js'
+import { hasPermission } from '../lib/access-policy.js'
 import { loadConfig, reloadConfig, type ReasoningEffort } from '../lib/config.js'
 import { getModelCapability, resolveReasoningEffortForModel } from '../lib/model-capabilities.js'
 import { browseProjectDirectories, inferProjectAliasFromPath } from '../lib/project-browser.js'
-import { toPublicConfig } from '../lib/projects.js'
+import { requireAccessibleProjectById, toPublicConfig } from '../lib/projects.js'
 import { pickProjectFolder } from '../lib/native-folder-picker.js'
 import {
   deleteRuntimeProject,
@@ -12,6 +13,12 @@ import {
   updateExplainRuntimeSettings,
   updateRequestScreeningRuntimeSettings,
 } from '../lib/runtime-settings.js'
+import {
+  type ChatInitialScrollTarget,
+  updateUserChatPreferences,
+  updateUserDirectPreferences,
+  updateUserExplainPreferences,
+} from '../lib/user-preferences.js'
 import { listTickets, reloadTicketsFromDisk } from '../services/tickets.js'
 import { listClientRequests, reloadClientRequestsFromDisk } from '../services/client-requests.js'
 
@@ -148,6 +155,112 @@ configRoutes.post('/config/explain', async (c) => {
     return c.json(toPublicConfig(config, getAuthSession(c)))
   } catch (error: any) {
     return c.json({ error: error.message }, 400)
+  }
+})
+
+configRoutes.post('/config/preferences/chat', async (c) => {
+  const auth = getAuthSession(c)
+  const config = loadConfig()
+  const { projectId, initialScrollTarget } = await c.req.json<{
+    projectId?: string
+    initialScrollTarget?: ChatInitialScrollTarget
+  }>()
+  let project
+
+  try {
+    project = requireAccessibleProjectById(config, auth, projectId)
+  } catch (error: any) {
+    return c.json(
+      { error: error.message, code: error.message === 'Project access denied' ? 'PROJECT_FORBIDDEN' : 'UNKNOWN_PROJECT' },
+      error.message === 'Project access denied' ? 403 : 400
+    )
+  }
+
+  if (!hasPermission(auth, 'explain') && !hasPermission(auth, 'direct')) {
+    return c.json({ error: 'This token cannot use chat preferences in the selected project', code: 'FEATURE_FORBIDDEN' }, 403)
+  }
+
+  if (initialScrollTarget !== 'bottom' && initialScrollTarget !== 'last_user_message') {
+    return c.json({ error: 'A valid chat initial scroll target is required' }, 400)
+  }
+
+  updateUserChatPreferences(auth, initialScrollTarget)
+  return c.json(toPublicConfig(loadConfig(), auth))
+})
+
+configRoutes.post('/config/preferences/explain', async (c) => {
+  const auth = getAuthSession(c)
+  const config = loadConfig()
+  const { projectId, model, reasoningEffort } = await c.req.json<{
+    projectId?: string
+    model?: string
+    reasoningEffort?: ReasoningEffort
+  }>()
+  let project
+
+  try {
+    project = requireAccessibleProjectById(config, auth, projectId)
+  } catch (error: any) {
+    return c.json(
+      { error: error.message, code: error.message === 'Project access denied' ? 'PROJECT_FORBIDDEN' : 'UNKNOWN_PROJECT' },
+      error.message === 'Project access denied' ? 403 : 400
+    )
+  }
+
+  const permissionError = requireProjectPermission(c, project.id, 'explain')
+  if (permissionError) {
+    return permissionError
+  }
+
+  if (!model?.trim() || !reasoningEffort) {
+    return c.json({ error: 'Explain model and reasoning effort are required' }, 400)
+  }
+
+  try {
+    const normalizedModel = getModelCapability(model).id
+    const normalizedReasoningEffort = resolveReasoningEffortForModel(normalizedModel, reasoningEffort)
+    updateUserExplainPreferences(auth, normalizedModel, normalizedReasoningEffort)
+    return c.json(toPublicConfig(loadConfig(), auth))
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Failed to save explain preferences' }, 400)
+  }
+})
+
+configRoutes.post('/config/preferences/direct', async (c) => {
+  const auth = getAuthSession(c)
+  const config = loadConfig()
+  const { projectId, model, reasoningEffort } = await c.req.json<{
+    projectId?: string
+    model?: string
+    reasoningEffort?: ReasoningEffort
+  }>()
+  let project
+
+  try {
+    project = requireAccessibleProjectById(config, auth, projectId)
+  } catch (error: any) {
+    return c.json(
+      { error: error.message, code: error.message === 'Project access denied' ? 'PROJECT_FORBIDDEN' : 'UNKNOWN_PROJECT' },
+      error.message === 'Project access denied' ? 403 : 400
+    )
+  }
+
+  const permissionError = requireProjectPermission(c, project.id, 'direct')
+  if (permissionError) {
+    return permissionError
+  }
+
+  if (!model?.trim() || !reasoningEffort) {
+    return c.json({ error: 'Direct model and reasoning effort are required' }, 400)
+  }
+
+  try {
+    const normalizedModel = getModelCapability(model).id
+    const normalizedReasoningEffort = resolveReasoningEffortForModel(normalizedModel, reasoningEffort)
+    updateUserDirectPreferences(auth, normalizedModel, normalizedReasoningEffort)
+    return c.json(toPublicConfig(loadConfig(), auth))
+  } catch (error: any) {
+    return c.json({ error: error.message || 'Failed to save direct preferences' }, 400)
   }
 })
 

@@ -1,6 +1,8 @@
 import { authorizedFetch } from './auth'
 
 export type AccessPermission = 'explain' | 'requests' | 'tickets' | 'direct'
+export type ChatInitialScrollTarget = 'bottom' | 'last_user_message'
+export type ModelReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh'
 
 export interface TicketFlowAgent {
   role: string
@@ -43,15 +45,28 @@ export interface AppConfig {
       expiresAt?: string | null
     }
   }
+  chat: {
+    initialScrollTarget: ChatInitialScrollTarget
+  }
   explain: {
     availableModels: Array<{
       id: string
       label: string
-      supportedReasoningEfforts: Array<'none' | 'low' | 'medium' | 'high' | 'xhigh'>
-      defaultReasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh'
+      supportedReasoningEfforts: ModelReasoningEffort[]
+      defaultReasoningEffort: ModelReasoningEffort
     }>
     selectedModel: string
-    selectedReasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh'
+    selectedReasoningEffort: ModelReasoningEffort
+  }
+  direct: {
+    availableModels: Array<{
+      id: string
+      label: string
+      supportedReasoningEfforts: ModelReasoningEffort[]
+      defaultReasoningEffort: ModelReasoningEffort
+    }>
+    selectedModel: string
+    selectedReasoningEffort: ModelReasoningEffort
   }
   requests: {
     screening: {
@@ -843,10 +858,36 @@ export async function changeOwnPassword(data: {
 }
 
 export async function updateExplainSettings(data: {
+  projectId: string
   model: string
-  reasoningEffort: 'none' | 'low' | 'medium' | 'high' | 'xhigh'
+  reasoningEffort: ModelReasoningEffort
 }): Promise<AppConfig> {
-  const res = await authorizedFetch('/api/config/explain', {
+  const res = await authorizedFetch('/api/config/preferences/explain', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  return readJson(res)
+}
+
+export async function updateDirectSettings(data: {
+  projectId: string
+  model: string
+  reasoningEffort: ModelReasoningEffort
+}): Promise<AppConfig> {
+  const res = await authorizedFetch('/api/config/preferences/direct', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  return readJson(res)
+}
+
+export async function updateChatSettings(data: {
+  projectId: string
+  initialScrollTarget: ChatInitialScrollTarget
+}): Promise<AppConfig> {
+  const res = await authorizedFetch('/api/config/preferences/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),

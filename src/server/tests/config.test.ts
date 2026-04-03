@@ -4,11 +4,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Hono } from 'hono'
+import { createOpenAuthSession } from '../lib/access-policy.js'
 import { RUNTIME_DATA_DIR_ENV, resolveRuntimeDataPath } from '../lib/runtime-data-paths.js'
 import { configRoutes } from '../routes/config.js'
 import { reloadConfig } from '../lib/config.js'
 import { updateRequestScreeningRuntimeSettings } from '../lib/runtime-settings.js'
 import { requireProjectById } from '../lib/projects.js'
+import { resolveUserPreferenceOwnerId } from '../lib/user-preferences.js'
 
 const RUNTIME_SETTINGS_PATH_ENV = 'INTENTLANE_CODEX_RUNTIME_SETTINGS_PATH'
 
@@ -105,6 +107,80 @@ test('runtime settings defaults can be isolated under INTENTLANE_CODEX_DATA_DIR'
       delete process.env[RUNTIME_SETTINGS_PATH_ENV]
     } else {
       process.env[RUNTIME_SETTINGS_PATH_ENV] = previousRuntimeSettingsPath
+    }
+
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+})
+
+test('preference routes persist open-session explain, direct, and chat selections under runtime data', async () => {
+  const previousDataDir = process.env[RUNTIME_DATA_DIR_ENV]
+  const tempDir = mkdtempSync(join(tmpdir(), 'intentlane-codex-config-preferences-test-'))
+  process.env[RUNTIME_DATA_DIR_ENV] = tempDir
+  const projectId = reloadConfig().defaultProjectId
+
+  try {
+    const app = new Hono()
+    app.route('/api', configRoutes)
+
+    const explainResponse = await app.request('http://localhost/api/config/preferences/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        model: 'gpt-5.4-mini',
+        reasoningEffort: 'high',
+      }),
+    })
+
+    assert.equal(explainResponse.status, 200)
+    const explainPayload = await explainResponse.json()
+    assert.equal(explainPayload.explain.selectedModel, 'gpt-5.4-mini')
+    assert.equal(explainPayload.explain.selectedReasoningEffort, 'high')
+
+    const directResponse = await app.request('http://localhost/api/config/preferences/direct', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        model: 'gpt-5.3-codex',
+        reasoningEffort: 'low',
+      }),
+    })
+
+    assert.equal(directResponse.status, 200)
+    const directPayload = await directResponse.json()
+    assert.equal(directPayload.direct.selectedModel, 'gpt-5.3-codex')
+    assert.equal(directPayload.direct.selectedReasoningEffort, 'low')
+
+    const chatResponse = await app.request('http://localhost/api/config/preferences/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        initialScrollTarget: 'last_user_message',
+      }),
+    })
+
+    assert.equal(chatResponse.status, 200)
+    const chatPayload = await chatResponse.json()
+    assert.equal(chatPayload.chat.initialScrollTarget, 'last_user_message')
+
+    const preferencesPath = resolveRuntimeDataPath(
+      'user-preferences',
+      `${encodeURIComponent(resolveUserPreferenceOwnerId(createOpenAuthSession()))}.json`
+    )
+    assert.equal(existsSync(preferencesPath), true)
+
+    const persisted = JSON.parse(readFileSync(preferencesPath, 'utf-8'))
+    assert.equal(persisted.chat.initialScrollTarget, 'last_user_message')
+    assert.equal(persisted.explain.model, 'gpt-5.4-mini')
+    assert.equal(persisted.direct.model, 'gpt-5.3-codex')
+  } finally {
+    if (previousDataDir === undefined) {
+      delete process.env[RUNTIME_DATA_DIR_ENV]
+    } else {
+      process.env[RUNTIME_DATA_DIR_ENV] = previousDataDir
     }
 
     rmSync(tempDir, { recursive: true, force: true })

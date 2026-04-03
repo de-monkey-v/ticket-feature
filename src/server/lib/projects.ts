@@ -3,9 +3,9 @@ import {
   getModelCapability,
   listModelCapabilities,
   listScreeningModelOptions,
-  resolveReasoningEffortForModel,
 } from './model-capabilities.js'
 import { loadRuntimeSettings } from './runtime-settings.js'
+import { loadUserPreferences, resolveUserSelectedModelSettings } from './user-preferences.js'
 import { hasProjectAccess, type AuthSession } from './access-policy.js'
 
 export function getDefaultProject(config: FlowsConfig): ProjectConfig {
@@ -46,10 +46,16 @@ export function requireAccessibleProjectById(
 
 export function toPublicConfig(config: FlowsConfig, session: AuthSession): PublicAppConfig {
   const runtimeProjectIds = new Set(loadRuntimeSettings().projects.map((project) => project.id))
-  const selectedModel = config.flows.explain.model
-  const selectedReasoningEffort = resolveReasoningEffortForModel(
-    selectedModel,
-    config.flows.explain.reasoningEffort ?? 'medium'
+  const preferences = loadUserPreferences(session)
+  const explainSelection = resolveUserSelectedModelSettings(
+    config.flows.explain.model,
+    config.flows.explain.reasoningEffort ?? 'medium',
+    preferences.explain
+  )
+  const directSelection = resolveUserSelectedModelSettings(
+    config.flows.explain.model,
+    config.flows.explain.reasoningEffort ?? 'medium',
+    preferences.direct
   )
   const allowedProjects = config.projects
     .filter((project) => hasProjectAccess(session, project.id))
@@ -80,15 +86,28 @@ export function toPublicConfig(config: FlowsConfig, session: AuthSession): Publi
         expiresAt: session.expiresAt ?? null,
       },
     },
+    chat: {
+      initialScrollTarget: preferences.chat?.initialScrollTarget ?? 'bottom',
+    },
     explain: {
-      availableModels: listModelCapabilities(selectedModel).map((capability) => ({
+      availableModels: listModelCapabilities(explainSelection.selectedModel).map((capability) => ({
         id: capability.id,
         label: capability.label,
         supportedReasoningEfforts: capability.supportedReasoningEfforts,
         defaultReasoningEffort: capability.defaultReasoningEffort,
       })),
-      selectedModel: getModelCapability(selectedModel).id,
-      selectedReasoningEffort,
+      selectedModel: getModelCapability(explainSelection.selectedModel).id,
+      selectedReasoningEffort: explainSelection.selectedReasoningEffort,
+    },
+    direct: {
+      availableModels: listModelCapabilities(directSelection.selectedModel).map((capability) => ({
+        id: capability.id,
+        label: capability.label,
+        supportedReasoningEfforts: capability.supportedReasoningEfforts,
+        defaultReasoningEffort: capability.defaultReasoningEffort,
+      })),
+      selectedModel: getModelCapability(directSelection.selectedModel).id,
+      selectedReasoningEffort: directSelection.selectedReasoningEffort,
     },
     requests: {
       screening: {

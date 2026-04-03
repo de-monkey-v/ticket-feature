@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { AppConfig, BackgroundRunStatus } from '../lib/api'
-import { startDirectBackgroundRun, stopBackgroundRun, updateExplainSettings } from '../lib/api'
+import { startDirectBackgroundRun, stopBackgroundRun, updateChatSettings, updateDirectSettings } from '../lib/api'
 import { buildNextExplainMessages, type ChatMessageRecord } from '../lib/chat-session'
+import { CHAT_INITIAL_SCROLL_TARGET_OPTIONS, getLastUserMessageId } from '../lib/chat-scroll'
 import {
   DEFAULT_DIRECT_AGENT_ROLE,
   DIRECT_AGENT_ROLE_TABS,
@@ -79,8 +80,8 @@ function directRoleActionClassName(role: DirectAgentRole) {
 }
 
 export function resolveDirectModelSelection(params: {
-  availableModels: AppConfig['explain']['availableModels']
-  currentReasoningEffort: AppConfig['explain']['selectedReasoningEffort']
+  availableModels: AppConfig['direct']['availableModels']
+  currentReasoningEffort: AppConfig['direct']['selectedReasoningEffort']
   nextModel: string
 }) {
   const nextCapability =
@@ -192,8 +193,8 @@ export function DirectView({
   const [isStreaming, setIsStreaming] = useState(false)
   const [activeRunId, setActiveRunId] = useState<string | undefined>()
   const [threadId, setThreadId] = useState<string | undefined>()
-  const [model, setModel] = useState(config.explain.selectedModel)
-  const [reasoningEffort, setReasoningEffort] = useState(config.explain.selectedReasoningEffort)
+  const [model, setModel] = useState(config.direct.selectedModel)
+  const [reasoningEffort, setReasoningEffort] = useState(config.direct.selectedReasoningEffort)
   const [streamStatus, setStreamStatus] = useState<StreamStatus>(() => createIdleStreamStatus())
   const [editingSession, setEditingSession] = useState<EditSession | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -204,12 +205,15 @@ export function DirectView({
   const connectedRunIdRef = useRef<string | undefined>(undefined)
   const syncedProjectIdRef = useRef<string | undefined>(undefined)
   const activeStreamSessionRef = useRef(0)
+  const userMessageRefs = useRef(new Map<string, HTMLDivElement>())
+  const pendingInitialScrollTargetRef = useRef<AppConfig['chat']['initialScrollTarget'] | null>(null)
+  const skipAutoScrollRef = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const { startEventStream, abort } = useSSE()
   const selectedModelCapability =
-    config.explain.availableModels.find((entry) => entry.id === model) ?? config.explain.availableModels[0]
-  const canManageExplainSettings = config.auth.session.isAdmin
+    config.direct.availableModels.find((entry) => entry.id === model) ?? config.direct.availableModels[0]
+  const canManageDirectSettings = Boolean(projectId)
   const selectedSession =
     directState?.sessions.find((session) => session.id === (selectedDirectSessionId || directState.selectedSessionId)) ?? null
   const selectedAgentRole = selectedSession?.agentRole ?? DEFAULT_DIRECT_AGENT_ROLE
@@ -235,6 +239,42 @@ export function DirectView({
     composerRef.current.focus()
     const cursor = composerRef.current.value.length
     composerRef.current.setSelectionRange(cursor, cursor)
+  }
+
+  const scrollToBottom = () => {
+    bottomRef.current?.scrollIntoView({ block: 'end' })
+  }
+
+  const registerUserMessageAnchor = (messageId: string) => (node: HTMLDivElement | null) => {
+    if (node) {
+      userMessageRefs.current.set(messageId, node)
+      return
+    }
+
+    userMessageRefs.current.delete(messageId)
+  }
+
+  const scrollToLastUserMessage = () => {
+    const targetMessageId = getLastUserMessageId(messages)
+    if (!targetMessageId) {
+      return false
+    }
+
+    const target = userMessageRefs.current.get(targetMessageId)
+    if (!target) {
+      return false
+    }
+
+    target.scrollIntoView({ block: 'start' })
+    return true
+  }
+
+  const applyInitialScrollTarget = (target: AppConfig['chat']['initialScrollTarget']) => {
+    if (target === 'last_user_message' && scrollToLastUserMessage()) {
+      return
+    }
+
+    scrollToBottom()
   }
 
   useEffect(() => {
@@ -329,6 +369,7 @@ export function DirectView({
     threadIdRef.current = nextThreadId
 
     if (contextChanged) {
+      pendingInitialScrollTargetRef.current = config.chat.initialScrollTarget
       setInput('')
       setIsStreaming(false)
       setEditingSession(null)
@@ -346,9 +387,9 @@ export function DirectView({
   }, [abort])
 
   useEffect(() => {
-    setModel(config.explain.selectedModel)
-    setReasoningEffort(config.explain.selectedReasoningEffort)
-  }, [config.explain.selectedModel, config.explain.selectedReasoningEffort])
+    setModel(config.direct.selectedModel)
+    setReasoningEffort(config.direct.selectedReasoningEffort)
+  }, [config.direct.selectedModel, config.direct.selectedReasoningEffort])
 
   useEffect(() => {
     if (!selectedModelCapability) {
@@ -400,8 +441,24 @@ export function DirectView({
     onDirectStateChange(nextState, activeRunId ? undefined : { immediate: true })
   }, [activeRunId, directState, messages, onDirectStateChange, threadId])
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  useLayoutEffect(() => {
+    const pendingInitialScrollTarget = pendingInitialScrollTargetRef.current
+    if (!pendingInitialScrollTarget) {
+      return
+    }
+
+    applyInitialScrollTarget(pendingInitialScrollTarget)
+    pendingInitialScrollTargetRef.current = null
+    skipAutoScrollRef.current = true
+  }, [messages])
+
+  useLayoutEffect(() => {
+    if (skipAutoScrollRef.current) {
+      skipAutoScrollRef.current = false
+      return
+    }
+
+    scrollToBottom()
   }, [messages, streamStatus.phase])
 
   useEffect(() => {
@@ -616,20 +673,40 @@ export function DirectView({
     setIsStreaming(Boolean(resolvedRunId))
   }
 
-  const persistExplainSettings = async (nextModel: string, nextReasoningEffort: typeof reasoningEffort) => {
-    await updateExplainSettings({ model: nextModel, reasoningEffort: nextReasoningEffort })
+  const persistDirectSettings = async (nextModel: string, nextReasoningEffort: typeof reasoningEffort) => {
+    if (!projectId) {
+      return
+    }
+
+    await updateDirectSettings({
+      projectId,
+      model: nextModel,
+      reasoningEffort: nextReasoningEffort,
+    })
+    await onConfigUpdated()
+  }
+
+  const persistChatSettings = async (nextInitialScrollTarget: AppConfig['chat']['initialScrollTarget']) => {
+    if (!projectId) {
+      return
+    }
+
+    await updateChatSettings({
+      projectId,
+      initialScrollTarget: nextInitialScrollTarget,
+    })
     await onConfigUpdated()
   }
 
   const handleModelChange = async (nextModel: string) => {
     const resolved = resolveDirectModelSelection({
-      availableModels: config.explain.availableModels,
+      availableModels: config.direct.availableModels,
       currentReasoningEffort: reasoningEffort,
       nextModel,
     })
     setModel(resolved.nextModel)
     setReasoningEffort(resolved.nextReasoningEffort)
-    await persistExplainSettings(resolved.nextModel, resolved.nextReasoningEffort)
+    await persistDirectSettings(resolved.nextModel, resolved.nextReasoningEffort)
   }
 
   const beginEdit = (messageId: string) => {
@@ -806,7 +883,7 @@ export function DirectView({
               aria-label="Direct Dev model selector"
               className="inline-flex max-w-full flex-wrap rounded-xl border border-zinc-800 bg-zinc-950/70 p-1"
             >
-              {config.explain.availableModels.map((entry) => {
+              {config.direct.availableModels.map((entry) => {
                 const isActive = entry.id === model
                 return (
                   <button
@@ -817,7 +894,7 @@ export function DirectView({
                     onClick={() => {
                       void handleModelChange(entry.id)
                     }}
-                    disabled={isStreaming || !canManageExplainSettings}
+                    disabled={isStreaming || !canManageDirectSettings}
                     className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
                       isActive
                         ? 'bg-blue-950/60 text-blue-100'
@@ -831,17 +908,32 @@ export function DirectView({
             </div>
             <select
               value={reasoningEffort}
-              disabled={isStreaming || !canManageExplainSettings}
+              disabled={isStreaming || !canManageDirectSettings}
               onChange={async (event) => {
                 const nextReasoningEffort = event.target.value as typeof reasoningEffort
                 setReasoningEffort(nextReasoningEffort)
-                await persistExplainSettings(model, nextReasoningEffort)
+                await persistDirectSettings(model, nextReasoningEffort)
               }}
               className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 disabled:text-zinc-500"
             >
               {selectedModelCapability.supportedReasoningEfforts.map((entry) => (
                 <option key={entry} value={entry}>
                   {entry}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Chat initial scroll target"
+              value={config.chat.initialScrollTarget}
+              disabled={isStreaming || !projectId}
+              onChange={async (event) => {
+                await persistChatSettings(event.target.value as AppConfig['chat']['initialScrollTarget'])
+              }}
+              className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs text-zinc-200 disabled:text-zinc-500"
+            >
+              {CHAT_INITIAL_SCROLL_TARGET_OPTIONS.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -936,16 +1028,17 @@ export function DirectView({
             {messages.map((message, index) => {
               const isPendingAssistant = isStreaming && message.role === 'assistant' && index === messages.length - 1
               return (
-                <ChatMessage
-                  key={message.id}
-                  role={message.role}
-                  content={message.content}
-                  canEdit={message.role === 'user' && !isStreaming}
-                  onEdit={message.role === 'user' ? () => beginEdit(message.id) : undefined}
-                  isPending={isPendingAssistant}
-                  pendingLabel={isPendingAssistant ? streamStatus.label : undefined}
-                  pendingDetail={isPendingAssistant ? statusMeta : undefined}
-                />
+                <div key={message.id} ref={message.role === 'user' ? registerUserMessageAnchor(message.id) : undefined}>
+                  <ChatMessage
+                    role={message.role}
+                    content={message.content}
+                    canEdit={message.role === 'user' && !isStreaming}
+                    onEdit={message.role === 'user' ? () => beginEdit(message.id) : undefined}
+                    isPending={isPendingAssistant}
+                    pendingLabel={isPendingAssistant ? streamStatus.label : undefined}
+                    pendingDetail={isPendingAssistant ? statusMeta : undefined}
+                  />
+                </div>
               )
             })}
             <div ref={bottomRef} />

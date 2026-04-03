@@ -111,6 +111,10 @@ export interface PublicExplainConfig {
   selectedReasoningEffort: ReasoningEffort
 }
 
+export interface PublicChatConfig {
+  initialScrollTarget: 'bottom' | 'last_user_message'
+}
+
 export interface PublicRequestScreeningConfig {
   availableModels: Array<{
     id: string
@@ -136,7 +140,9 @@ export interface PublicAppConfig {
       expiresAt?: string | null
     }
   }
+  chat: PublicChatConfig
   explain: PublicExplainConfig
+  direct: PublicExplainConfig
   requests: {
     screening: PublicRequestScreeningConfig
   }
