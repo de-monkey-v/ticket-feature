@@ -8,6 +8,7 @@ import {
   type ProjectBrowserResult,
 } from '../lib/api'
 import { clearLegacyExplainState } from '../lib/explain-state'
+import { orderProjectsForSelection } from '../lib/keyboard-shortcuts'
 
 interface ProjectControlsProps {
   authSession: AppConfig['auth']['session']
@@ -53,9 +54,7 @@ export function ProjectControls({
   }, [isManageDialogOpen])
 
   const selectedProject = projects.find((project) => project.id === projectId)
-  const orderedProjects = selectedProject
-    ? [selectedProject, ...projects.filter((project) => project.id !== selectedProject.id)]
-    : projects
+  const orderedProjects = orderProjectsForSelection(projects, projectId)
 
   const handleCloseManageDialog = () => {
     setProjectPickerMessage(null)
@@ -175,9 +174,14 @@ export function ProjectControls({
       {variant === 'header' ? (
         <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-end sm:gap-3 lg:w-auto">
           <div className="min-w-0 sm:min-w-[240px]">
-            <label className="mb-1 block text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
-              Current Project
-            </label>
+            <div className="mb-1 flex items-center gap-2">
+              <label className="block text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">
+                Current Project
+              </label>
+              <span className="rounded-full border border-sky-900/70 bg-sky-950/30 px-2 py-0.5 text-[10px] font-medium text-sky-200">
+                Alt+P
+              </span>
+            </div>
             {projectSelect}
           </div>
           {authSession.isAdmin ? (
@@ -194,7 +198,12 @@ export function ProjectControls({
       ) : (
         <>
           <div className="border-b border-zinc-800 p-3">
-            <label className="mb-1 block text-xs text-zinc-400">Current Project</label>
+            <div className="mb-1 flex items-center gap-2">
+              <label className="block text-xs text-zinc-400">Current Project</label>
+              <span className="rounded-full border border-sky-900/70 bg-sky-950/30 px-2 py-0.5 text-[10px] font-medium text-sky-200">
+                Alt+P
+              </span>
+            </div>
             {projectSelect}
           </div>
 

@@ -6,6 +6,8 @@ import { DirectView } from './components/DirectView'
 import { TicketView } from './components/TicketView'
 import { ClientRequestsView } from './components/ClientRequestsView'
 import { IncidentsView } from './components/IncidentsView'
+import { ProjectSwitcherDialog } from './components/ProjectSwitcherDialog'
+import { ShortcutsHelpDialog } from './components/ShortcutsHelpDialog'
 import { Sidebar } from './components/Sidebar'
 import {
   CompletedRepliesSidebar,
@@ -29,6 +31,12 @@ import { fetchOrMigrateExplainState, saveExplainState } from './lib/explain-api'
 import { fetchDirectState, saveDirectState } from './lib/direct-api'
 import { loadCompletedRepliesState, saveCompletedRepliesState } from './lib/completed-replies-state'
 import { evaluateBackgroundRunRefresh } from './lib/background-run-refresh'
+import {
+  clampSelectionIndex,
+  getAltNumberSelectionIndex,
+  isShortcutsHelpKey,
+  orderProjectsForSelection,
+} from './lib/keyboard-shortcuts'
 import {
   createDefaultDirectState,
   createDirectSessionState,
@@ -77,6 +85,7 @@ export interface DirectSessionCreateResult {
 }
 
 const PROJECT_STORAGE_KEY = 'intentlane-codex.selected-project-id'
+const SHORTCUT_HINT_DISMISSED_STORAGE_KEY = 'intentlane-codex.shortcuts-hint-dismissed'
 
 function hasSessionPermission(
   session: Pick<AppConfig['auth']['session'], 'isAdmin' | 'permissions'>,
@@ -109,6 +118,14 @@ function isCompletedReplyRun(run: BackgroundRunSummary) {
   return (run.kind === 'explain_reply' || run.kind === 'direct_reply') && run.status === 'completed'
 }
 
+function hasBlockingModalOpen() {
+  return document.querySelector('[role="dialog"][aria-modal="true"]:not([data-project-switcher="true"])') !== null
+}
+
+function isEditableShortcutTarget(target: EventTarget | null) {
+  return target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"]') !== null
+}
+
 function getBackgroundRunRecoveryMode(run: BackgroundRunSummary): 'native' | 'rehydrated' | undefined {
   if (!run.result || typeof run.result !== 'object') {
     return undefined
@@ -139,6 +156,10 @@ export default function App() {
   const [isCreatingRequest, setIsCreatingRequest] = useState(false)
   const [isCreatingTicket, setIsCreatingTicket] = useState(false)
   const [projectId, setProjectId] = useState('')
+  const [isProjectSwitcherOpen, setIsProjectSwitcherOpen] = useState(false)
+  const [isShortcutsHelpOpen, setIsShortcutsHelpOpen] = useState(false)
+  const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(0)
+  const [showShortcutHint, setShowShortcutHint] = useState(false)
   const [explainState, setExplainState] = useState<ExplainState | null>(null)
   const [explainThreads, setExplainThreads] = useState<ExplainThreadSummary[]>([])
   const [selectedExplainThreadId, setSelectedExplainThreadId] = useState('')
@@ -202,6 +223,10 @@ export default function App() {
     ? `${config.auth.session.kind}:${config.auth.session.accountId ?? ''}:${config.auth.session.tokenId ?? ''}`
     : 'anonymous'
   const mustChangePassword = Boolean(config?.auth.session.mustChangePassword)
+  const orderedProjects = useMemo(
+    () => orderProjectsForSelection(config?.allowedProjects ?? [], projectId),
+    [config, projectId]
+  )
 
   const clearExplainPersistTimer = useCallback(() => {
     if (explainPersistTimerRef.current !== null) {
@@ -368,6 +393,9 @@ export default function App() {
     setConfigError(null)
     setMode('explain')
     setProjectId('')
+    setIsProjectSwitcherOpen(false)
+    setIsShortcutsHelpOpen(false)
+    setHighlightedProjectIndex(0)
     setTickets([])
     setClientRequests([])
     setIncidents([])
@@ -517,6 +545,15 @@ export default function App() {
       sessionStorage.setItem(PROJECT_STORAGE_KEY, projectId)
     }
   }, [projectId])
+
+  useEffect(() => {
+    if (!config || mustChangePassword || typeof window === 'undefined') {
+      setShowShortcutHint(false)
+      return
+    }
+
+    setShowShortcutHint(window.localStorage.getItem(SHORTCUT_HINT_DISMISSED_STORAGE_KEY) !== 'true')
+  }, [config, mustChangePassword])
 
   useEffect(() => {
     flushExplainStatePersist()
@@ -1368,13 +1405,126 @@ export default function App() {
     []
   )
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) {
+  const handleCloseProjectSwitcher = useCallback(() => {
+    setIsProjectSwitcherOpen(false)
+  }, [])
+
+  const handleOpenShortcutsHelp = useCallback(() => {
+    setIsShortcutsHelpOpen(true)
+  }, [])
+
+  const handleCloseShortcutsHelp = useCallback(() => {
+    setIsShortcutsHelpOpen(false)
+  }, [])
+
+  const handleOpenProjectSwitcher = useCallback(() => {
+    if (orderedProjects.length === 0) {
+      return
+    }
+
+    setHighlightedProjectIndex(0)
+    setIsProjectSwitcherOpen(true)
+  }, [orderedProjects.length])
+
+  const handleSelectProjectFromSwitcher = useCallback((nextProjectId: string) => {
+    setProjectId(nextProjectId)
+    setIsProjectSwitcherOpen(false)
+    setHighlightedProjectIndex(0)
+  }, [])
+
+  const handleDismissShortcutHint = useCallback(() => {
+    setShowShortcutHint(false)
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(SHORTCUT_HINT_DISMISSED_STORAGE_KEY, 'true')
+    }
+  }, [])
+
+  const handleSelectConversationByShortcut = useCallback(
+    (index: number) => {
+      if (mode === 'explain') {
+        const nextThread = explainThreads[index]
+        if (nextThread) {
+          handleSelectExplainThread(nextThread.id)
+        }
         return
       }
 
-      if (!event.altKey || event.ctrlKey || event.metaKey) {
+      if (mode !== 'direct') {
+        return
+      }
+
+      const nextSession = directSessions[index]
+      if (nextSession) {
+        handleSelectDirectSession(nextSession.id)
+      }
+    },
+    [directSessions, explainThreads, handleSelectDirectSession, handleSelectExplainThread, mode]
+  )
+
+  useEffect(() => {
+    if (!isProjectSwitcherOpen) {
+      return
+    }
+
+    if (orderedProjects.length === 0) {
+      setIsProjectSwitcherOpen(false)
+      setHighlightedProjectIndex(0)
+      return
+    }
+
+    setHighlightedProjectIndex((current) => clampSelectionIndex(current, orderedProjects.length))
+  }, [isProjectSwitcherOpen, orderedProjects.length])
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) {
+        return
+      }
+
+      const hasAltShortcutModifier = event.altKey && !event.ctrlKey && !event.metaKey
+      const isHelpShortcut = isShortcutsHelpKey({
+        key: event.key,
+        code: event.code,
+        shiftKey: event.shiftKey,
+      })
+      const canHandleHelpShortcut = isHelpShortcut && !event.altKey && !event.ctrlKey && !event.metaKey
+
+      if (isShortcutsHelpOpen) {
+        if (canHandleHelpShortcut && !isEditableShortcutTarget(event.target)) {
+          event.preventDefault()
+          handleCloseShortcutsHelp()
+        }
+
+        return
+      }
+
+      if (isProjectSwitcherOpen) {
+        if (hasAltShortcutModifier && event.code === 'KeyP') {
+          event.preventDefault()
+          handleCloseProjectSwitcher()
+        }
+
+        return
+      }
+
+      if (hasBlockingModalOpen()) {
+        return
+      }
+
+      if (canHandleHelpShortcut && !isEditableShortcutTarget(event.target)) {
+        event.preventDefault()
+        handleOpenShortcutsHelp()
+        return
+      }
+
+      if (!hasAltShortcutModifier) {
+        return
+      }
+
+      if (event.code === 'KeyP') {
+        event.preventDefault()
+        handleOpenProjectSwitcher()
         return
       }
 
@@ -1388,25 +1538,43 @@ export default function App() {
         return
       }
 
-      if (event.code !== 'KeyN') {
+      if (event.code === 'KeyN') {
+        event.preventDefault()
+
+        if (mode === 'explain') {
+          void handleCreateExplainThread()
+          return
+        }
+
+        void handleCreateDirectSession()
+        return
+      }
+
+      const selectionIndex = getAltNumberSelectionIndex(event.code)
+      if (selectionIndex === null) {
         return
       }
 
       event.preventDefault()
-
-      if (mode === 'explain') {
-        void handleCreateExplainThread()
-        return
-      }
-
-      void handleCreateDirectSession()
+      handleSelectConversationByShortcut(selectionIndex)
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [handleCreateDirectSession, handleCreateExplainThread, mode])
+  }, [
+    handleCloseShortcutsHelp,
+    handleCloseProjectSwitcher,
+    handleCreateDirectSession,
+    handleCreateExplainThread,
+    handleOpenShortcutsHelp,
+    handleOpenProjectSwitcher,
+    handleSelectConversationByShortcut,
+    isProjectSwitcherOpen,
+    isShortcutsHelpOpen,
+    mode,
+  ])
 
   if (authRequired && !token) {
     return <LoginView error={authError} onAccountSubmit={handleAccountLogin} />
@@ -1436,174 +1604,236 @@ export default function App() {
   }
 
   return (
-    <Layout
-      sidebar={
-        <Sidebar
-          mode={mode}
-          onModeChange={setMode}
-          onOpenExplainHome={handleOpenExplainHome}
-          onOpenDirectHome={handleOpenDirectHome}
-          onOpenRequestHome={handleOpenRequestHome}
-          onCreateRequest={handleStartCreateRequest}
-          onOpenTicketHome={handleOpenTicketHome}
-          onCreateTicket={handleStartCreateTicket}
-          onOpenIncidentHome={() => {
-            void handleOpenIncidentHome()
-          }}
-          tickets={tickets}
-          requests={clientRequests}
-          incidents={incidents}
-          selectedTicketId={selectedTicketId}
-          selectedRequestId={selectedRequestId}
-          selectedIncidentId={selectedIncidentId}
-          onSelectTicket={handleSelectTicketFromSidebar}
-          onSelectRequest={handleSelectRequestFromSidebar}
-          onSelectIncident={handleSelectIncidentFromSidebar}
-          onDeleteTicket={handleDeleteTicket}
-          onDeleteRequest={handleDeleteRequest}
-          explainThreads={explainThreads}
-          selectedExplainThreadId={selectedExplainThreadId}
-          onSelectExplainThread={handleSelectExplainThread}
-          onCreateExplainThread={handleCreateExplainThread}
-          onDeleteExplainThread={handleDeleteExplainThread}
-          onRenameExplainThread={handleRenameExplainThread}
-          directSessions={directSessions}
-          selectedDirectSessionId={selectedDirectSessionId}
-          onSelectDirectSession={handleSelectDirectSession}
-          onCreateDirectSession={handleCreateDirectSession}
-          onDeleteDirectSession={handleDeleteDirectSession}
-          onRenameDirectSession={handleRenameDirectSession}
-          authSession={config.auth.session}
-          onLogout={handleLogout}
-        />
-      }
-      secondarySidebar={
-        <CompletedRepliesSidebar
-          items={completedReplyItems}
-          collapsed={isCompletedRepliesCollapsed}
-          sortOrder={completedReplySortOrder}
-          onToggleCollapse={() => {
-            setIsCompletedRepliesCollapsed((current) => !current)
-          }}
-          onSortOrderChange={setCompletedReplySortOrder}
-          onDismissAll={() => {
-            dismissAllCompletedReplies(completedReplyItems.map((item) => item.id))
-          }}
-        />
-      }
-    >
-      {mode === 'explain' ? (
-        <ChatView
-          projectId={projectId}
-          explainState={explainState}
-          selectedExplainThreadId={selectedExplainThreadId}
-          composerFocusToken={composerFocusToken}
-          config={config}
-          onProjectChange={setProjectId}
-          onExplainStateChange={handleExplainStateChange}
-          onRequestCreated={handleRequestCreated}
-          onConfigUpdated={async () => {
-            await refreshConfig()
-          }}
-        />
-      ) : mode === 'direct' ? (
-        <DirectView
-          projectId={projectId}
-          directState={directState}
-          selectedDirectSessionId={selectedDirectSessionId}
-          isStateLoading={isDirectStateLoading}
-          composerFocusToken={composerFocusToken}
-          config={config}
-          onProjectChange={setProjectId}
-          onDirectStateChange={handleDirectStateChange}
-          onConfigUpdated={async () => {
-            await refreshConfig()
-          }}
-        />
-      ) : mode === 'requests' ? (
-        <ClientRequestsView
-          projectId={projectId}
-          config={config}
-          requests={clientRequests}
-          isCreatingRequest={isCreatingRequest}
-          selectedRequestId={selectedRequestId}
-          onSelectRequest={(requestId) => {
-            setIsCreatingRequest(false)
-            setSelectedRequestId(requestId)
-          }}
-          onProjectChange={setProjectId}
-          onStartCreate={handleStartCreateRequest}
-          onCancelCreate={handleOpenRequestHome}
-          onRefresh={refreshClientRequests}
-          onConfigUpdated={async () => {
-            await refreshConfig()
-          }}
-          onOpenTicket={(ticketId: string) => {
-            setIsCreatingTicket(false)
-            setSelectedTicketId(ticketId)
-            setMode('ticket')
-            refreshTickets()
-          }}
-        />
-      ) : mode === 'incidents' ? (
-        <IncidentsView
-          projectId={projectId}
-          config={config}
-          incidents={incidents}
-          selectedIncidentId={selectedIncidentId}
-          onSelectIncident={handleSelectIncidentFromSidebar}
-          onProjectChange={setProjectId}
-          onRefresh={() => {
-            void refreshIncidents()
-          }}
-          onConfigUpdated={async () => {
-            await refreshConfig()
-          }}
-          onIncidentDeleted={(incidentId) => {
-            if (selectedIncidentId === incidentId) {
-              setSelectedIncidentId(null)
-            }
-          }}
-        />
-      ) : mode === 'access' ? (
-        <AccessView
-          config={config}
-          projectId={projectId}
-          onProjectChange={setProjectId}
-          onConfigUpdated={async () => {
-            await refreshConfig()
-          }}
-        />
-      ) : (
-        <TicketView
-          projectId={projectId}
-          config={config}
-          ticketCount={tickets.length}
-          isCreatingTicket={isCreatingTicket}
-          selectedTicketId={selectedTicketId}
-          onTicketCreated={(id) => {
-            setIsCreatingTicket(false)
-            setSelectedTicketId(id)
-            refreshTickets()
-          }}
-          onTicketDeleted={() => {
-            setSelectedTicketId(null)
-          }}
-          onProjectChange={setProjectId}
-          onStartCreate={handleStartCreateTicket}
-          onCancelCreate={handleOpenTicketHome}
-          onRefresh={refreshTickets}
-          onConfigUpdated={async () => {
-            await refreshConfig()
-          }}
-          onOpenIncident={async (ticketId) => {
-            const list = await fetchIncidents(projectId, ticketId)
-            setIncidents(list)
-            setSelectedIncidentId(list[0]?.id ?? null)
-            setMode('incidents')
-          }}
-        />
-      )}
-    </Layout>
+    <>
+      <Layout
+        sidebar={
+          <Sidebar
+            mode={mode}
+            onModeChange={setMode}
+            onOpenExplainHome={handleOpenExplainHome}
+            onOpenDirectHome={handleOpenDirectHome}
+            onOpenRequestHome={handleOpenRequestHome}
+            onCreateRequest={handleStartCreateRequest}
+            onOpenTicketHome={handleOpenTicketHome}
+            onCreateTicket={handleStartCreateTicket}
+            onOpenIncidentHome={() => {
+              void handleOpenIncidentHome()
+            }}
+            tickets={tickets}
+            requests={clientRequests}
+            incidents={incidents}
+            selectedTicketId={selectedTicketId}
+            selectedRequestId={selectedRequestId}
+            selectedIncidentId={selectedIncidentId}
+            onSelectTicket={handleSelectTicketFromSidebar}
+            onSelectRequest={handleSelectRequestFromSidebar}
+            onSelectIncident={handleSelectIncidentFromSidebar}
+            onDeleteTicket={handleDeleteTicket}
+            onDeleteRequest={handleDeleteRequest}
+            explainThreads={explainThreads}
+            selectedExplainThreadId={selectedExplainThreadId}
+            onSelectExplainThread={handleSelectExplainThread}
+            onCreateExplainThread={handleCreateExplainThread}
+            onDeleteExplainThread={handleDeleteExplainThread}
+            onRenameExplainThread={handleRenameExplainThread}
+            directSessions={directSessions}
+            selectedDirectSessionId={selectedDirectSessionId}
+            onSelectDirectSession={handleSelectDirectSession}
+            onCreateDirectSession={handleCreateDirectSession}
+            onDeleteDirectSession={handleDeleteDirectSession}
+            onRenameDirectSession={handleRenameDirectSession}
+            onOpenShortcutsHelp={handleOpenShortcutsHelp}
+            authSession={config.auth.session}
+            onLogout={handleLogout}
+          />
+        }
+        secondarySidebar={
+          <CompletedRepliesSidebar
+            items={completedReplyItems}
+            collapsed={isCompletedRepliesCollapsed}
+            sortOrder={completedReplySortOrder}
+            onToggleCollapse={() => {
+              setIsCompletedRepliesCollapsed((current) => !current)
+            }}
+            onSortOrderChange={setCompletedReplySortOrder}
+            onDismissAll={() => {
+              dismissAllCompletedReplies(completedReplyItems.map((item) => item.id))
+            }}
+          />
+        }
+      >
+        {mode === 'explain' ? (
+          <ChatView
+            projectId={projectId}
+            explainState={explainState}
+            selectedExplainThreadId={selectedExplainThreadId}
+            composerFocusToken={composerFocusToken}
+            config={config}
+            onProjectChange={setProjectId}
+            onExplainStateChange={handleExplainStateChange}
+            onRequestCreated={handleRequestCreated}
+            onConfigUpdated={async () => {
+              await refreshConfig()
+            }}
+          />
+        ) : mode === 'direct' ? (
+          <DirectView
+            projectId={projectId}
+            directState={directState}
+            selectedDirectSessionId={selectedDirectSessionId}
+            isStateLoading={isDirectStateLoading}
+            composerFocusToken={composerFocusToken}
+            config={config}
+            onProjectChange={setProjectId}
+            onDirectStateChange={handleDirectStateChange}
+            onConfigUpdated={async () => {
+              await refreshConfig()
+            }}
+          />
+        ) : mode === 'requests' ? (
+          <ClientRequestsView
+            projectId={projectId}
+            config={config}
+            requests={clientRequests}
+            isCreatingRequest={isCreatingRequest}
+            selectedRequestId={selectedRequestId}
+            onSelectRequest={(requestId) => {
+              setIsCreatingRequest(false)
+              setSelectedRequestId(requestId)
+            }}
+            onProjectChange={setProjectId}
+            onStartCreate={handleStartCreateRequest}
+            onCancelCreate={handleOpenRequestHome}
+            onRefresh={refreshClientRequests}
+            onConfigUpdated={async () => {
+              await refreshConfig()
+            }}
+            onOpenTicket={(ticketId: string) => {
+              setIsCreatingTicket(false)
+              setSelectedTicketId(ticketId)
+              setMode('ticket')
+              refreshTickets()
+            }}
+          />
+        ) : mode === 'incidents' ? (
+          <IncidentsView
+            projectId={projectId}
+            config={config}
+            incidents={incidents}
+            selectedIncidentId={selectedIncidentId}
+            onSelectIncident={handleSelectIncidentFromSidebar}
+            onProjectChange={setProjectId}
+            onRefresh={() => {
+              void refreshIncidents()
+            }}
+            onConfigUpdated={async () => {
+              await refreshConfig()
+            }}
+            onIncidentDeleted={(incidentId) => {
+              if (selectedIncidentId === incidentId) {
+                setSelectedIncidentId(null)
+              }
+            }}
+          />
+        ) : mode === 'access' ? (
+          <AccessView
+            config={config}
+            projectId={projectId}
+            onProjectChange={setProjectId}
+            onConfigUpdated={async () => {
+              await refreshConfig()
+            }}
+          />
+        ) : (
+          <TicketView
+            projectId={projectId}
+            config={config}
+            ticketCount={tickets.length}
+            isCreatingTicket={isCreatingTicket}
+            selectedTicketId={selectedTicketId}
+            onTicketCreated={(id) => {
+              setIsCreatingTicket(false)
+              setSelectedTicketId(id)
+              refreshTickets()
+            }}
+            onTicketDeleted={() => {
+              setSelectedTicketId(null)
+            }}
+            onProjectChange={setProjectId}
+            onStartCreate={handleStartCreateTicket}
+            onCancelCreate={handleOpenTicketHome}
+            onRefresh={refreshTickets}
+            onConfigUpdated={async () => {
+              await refreshConfig()
+            }}
+            onOpenIncident={async (ticketId) => {
+              const list = await fetchIncidents(projectId, ticketId)
+              setIncidents(list)
+              setSelectedIncidentId(list[0]?.id ?? null)
+              setMode('incidents')
+            }}
+          />
+        )}
+      </Layout>
+
+      {showShortcutHint ? (
+        <div className="pointer-events-none fixed inset-x-4 top-4 z-40 flex justify-center">
+          <div className="pointer-events-auto w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-950/96 p-4 shadow-2xl backdrop-blur">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-zinc-100">Keyboard Shortcuts</p>
+                <p className="mt-1 text-xs leading-5 text-zinc-400">
+                  프로젝트 전환과 대화 이동을 키보드로 바로 할 수 있습니다.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleDismissShortcutHint}
+                className="shrink-0 rounded-lg border border-zinc-700 px-2.5 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-900"
+              >
+                닫기
+              </button>
+            </div>
+            <div className="mt-3 grid gap-2 text-sm text-zinc-200 sm:grid-cols-2">
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2">
+                <span className="font-medium text-sky-200">Alt+P</span>
+                <span className="ml-2 text-zinc-400">프로젝트 전환</span>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2">
+                <span className="font-medium text-emerald-200">Alt+1-5</span>
+                <span className="ml-2 text-zinc-400">thread/session 선택</span>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2">
+                <span className="font-medium text-amber-200">Alt+N</span>
+                <span className="ml-2 text-zinc-400">새 thread/session</span>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2">
+                <span className="font-medium text-violet-200">Alt+E</span>
+                <span className="ml-2 text-zinc-400">입력창 포커스</span>
+              </div>
+              <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2 sm:col-span-2">
+                <span className="font-medium text-fuchsia-200">?</span>
+                <span className="ml-2 text-zinc-400">전체 단축키 도움말</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <ShortcutsHelpDialog
+        open={isShortcutsHelpOpen}
+        onClose={handleCloseShortcutsHelp}
+      />
+
+      <ProjectSwitcherDialog
+        open={isProjectSwitcherOpen}
+        projects={orderedProjects}
+        projectId={projectId}
+        highlightedIndex={highlightedProjectIndex}
+        onHighlightChange={setHighlightedProjectIndex}
+        onProjectChange={handleSelectProjectFromSwitcher}
+        onClose={handleCloseProjectSwitcher}
+      />
+    </>
   )
 }

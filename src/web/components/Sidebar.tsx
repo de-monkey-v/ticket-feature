@@ -208,6 +208,7 @@ interface SidebarProps {
   onCreateDirectSession: () => Promise<DirectSessionCreateResult>
   onDeleteDirectSession: (id: string) => Promise<void>
   onRenameDirectSession: (id: string, title: string) => Promise<void>
+  onOpenShortcutsHelp: () => void
   onLogout: () => Promise<void>
 }
 
@@ -252,6 +253,7 @@ export function Sidebar({
   onCreateDirectSession,
   onDeleteDirectSession,
   onRenameDirectSession,
+  onOpenShortcutsHelp,
   onLogout,
 }: SidebarProps) {
   const [isLoggingOut, setIsLoggingOut] = useState(false)
@@ -617,16 +619,25 @@ export function Sidebar({
             ) : null}
           </div>
 
-          {canLogOut ? (
+          <div className="flex shrink-0 items-center gap-2">
             <button
               type="button"
-              onClick={() => void handleLogout()}
-              disabled={isLoggingOut}
-              className="shrink-0 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:text-zinc-500"
+              onClick={onOpenShortcutsHelp}
+              className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800"
             >
-              {isLoggingOut ? '로그아웃 중…' : 'Log Out'}
+              ? Shortcuts
             </button>
-          ) : null}
+            {canLogOut ? (
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+                disabled={isLoggingOut}
+                className="shrink-0 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:text-zinc-500"
+              >
+                {isLoggingOut ? '로그아웃 중…' : 'Log Out'}
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {logoutError ? <p className="mt-2 text-xs text-red-300">{logoutError}</p> : null}
@@ -653,7 +664,12 @@ export function Sidebar({
       {mode === 'explain' && canUseExplain && (
         <div className="flex-1 overflow-y-auto p-2">
           <div className="mb-3 px-1">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">Explain Threads</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">Explain Threads</p>
+              <span className="rounded-full border border-emerald-900/70 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-medium text-emerald-200">
+                Alt+1-5
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => {
@@ -798,7 +814,12 @@ export function Sidebar({
       {mode === 'direct' && canUseDirect && (
         <div className="flex-1 overflow-y-auto p-2">
           <div className="mb-3 px-1">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">Direct Sessions</p>
+            <div className="flex items-center gap-2">
+              <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-zinc-500">Direct Sessions</p>
+              <span className="rounded-full border border-emerald-900/70 bg-emerald-950/30 px-2 py-0.5 text-[10px] font-medium text-emerald-200">
+                Alt+1-5
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => {
