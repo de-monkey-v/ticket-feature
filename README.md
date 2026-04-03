@@ -17,16 +17,33 @@
 
 `native Windows`는 이 저장소 기준으로 정식 보장하지 않는다.
 
+준비되었는지 바로 확인하려면:
+
+```bash
+node -v
+pnpm -v
+git --version
+rg --version
+```
+
 이 프로젝트는 별도 인증 UI를 제공하지 않는다. Codex/OpenAI 접근은 현재 머신의 로컬 설정을 그대로 사용한다.
+
+중요:
+
+- 이 저장소가 Codex/OpenAI 로그인이나 API 키 발급을 대신 처리해 주지는 않는다
+- 현재 머신에서 Codex/OpenAI 인증이 아직 안 되어 있으면 앱은 떠도 `Explain`, `Direct Dev`, `Ticket` 실행은 실패할 수 있다
+- 서버 자체 로그인은 이 프로젝트의 `.env`로 따로 설정한다. 이것과 Codex/OpenAI 인증은 별개다
 
 ### 2. 설치
 
 ```bash
-git clone <your-fork-or-this-repo>
+git clone https://github.com/de-monkey-v/intentlane-codex.git
 cd intentlane-codex
 pnpm install
 cp .env.example .env
 ```
+
+공개 저장소에서 처음 받아 실행할 때는 `.env`를 복사한 뒤 최소한 `INTENTLANE_CODEX_BOOTSTRAP_ROOT_PASSWORD`를 실제 값으로 바꾸는 편이 안전하다.
 
 ### 3. 첫 실행용 `.env`
 
@@ -41,6 +58,8 @@ INTENTLANE_CODEX_BOOTSTRAP_ROOT_NAME=admin
 INTENTLANE_CODEX_BOOTSTRAP_ROOT_PASSWORD=change-this-before-use
 ```
 
+가장 빠른 첫 실행만 확인하려면 위 값 중 `INTENTLANE_CODEX_BOOTSTRAP_ROOT_PASSWORD`만 먼저 바꿔도 된다.
+
 추가로 개발 데이터를 저장소 루트와 분리하려면 아래를 권장한다.
 
 ```dotenv
@@ -52,6 +71,13 @@ INTENTLANE_CODEX_DATA_DIR=.local/dev-data
 ```bash
 pnpm dev
 ```
+
+첫 실행 브라우저 진입 순서:
+
+1. `http://localhost:5173/` 접속
+2. `admin`과 `.env`에 넣은 비밀번호로 로그인
+3. 비밀번호 변경 화면이 나오면 먼저 변경
+4. 동작 확인이 필요하면 `http://localhost:3001/api/health`도 함께 확인
 
 개발 모드 기본 주소:
 
