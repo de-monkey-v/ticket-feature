@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { loadConfig, type ProjectConfig } from '../lib/config.js'
 import { runCodexTurn, runRecoverableCodexTurn, type CodexTurnResult, type RunCodexTurnOptions } from './codex-sdk.js'
 import type { Ticket, TicketPlanningBlock, TicketWorktree } from './tickets.js'
@@ -56,6 +58,9 @@ const TICKET_COORDINATOR_DECISION_SCHEMA = {
   },
 } as const
 
+const PROJECT_SKILLS_DIR = resolve(process.cwd(), '.codex/skills')
+const TICKET_COORDINATOR_SKILL = 'ticket-coordinator'
+
 function getAllowedKinds(trigger: CoordinatorTrigger) {
   if (trigger === 'plan_review_failed') {
     return ['retry_plan', 'needs_decision', 'needs_request_clarification'] as const
@@ -71,6 +76,18 @@ function makeExcerpt(text: string | undefined, limit = 6_000) {
   }
 
   return normalized.length <= limit ? normalized : `${normalized.slice(0, limit)}\n...(truncated)`
+}
+
+function getProjectSkillDirectories() {
+  if (!existsSync(PROJECT_SKILLS_DIR)) {
+    return undefined
+  }
+
+  return [PROJECT_SKILLS_DIR]
+}
+
+function buildSkillInvocation(skillName: string) {
+  return `Use $${skillName} at ${resolve(PROJECT_SKILLS_DIR, skillName)} for this ticket step.`
 }
 
 function summarizeVerificationCommands(project: ProjectConfig) {
@@ -137,6 +154,8 @@ function buildAllowedActions(trigger: CoordinatorTrigger, canRetryImplementInSam
 
 function buildCoordinatorPrompt(opts: CoordinateTicketFailureOptions) {
   return [
+    buildSkillInvocation(TICKET_COORDINATOR_SKILL),
+    '',
     `Trigger: ${opts.trigger}`,
     '',
     `Ticket title: ${opts.ticket.title}`,
@@ -259,6 +278,7 @@ export async function coordinateTicketFailure(
     },
     promptFile: coordinatorConfig.promptFile,
     cwd: opts.ticket.worktree?.worktreePath ?? opts.ticket.projectPath,
+    additionalDirectories: getProjectSkillDirectories(),
     threadId: opts.threadId,
     model: coordinatorConfig.model,
     reasoningEffort: coordinatorConfig.reasoningEffort,

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Analyze"
+  short_description: "티켓 요구사항을 구현 분석과 영향 범위로 정리하는 스킬"
+  default_prompt: "Use $ticket-analyze to turn this ticket into a concrete implementation analysis."

@@ -111,6 +111,7 @@ test('incident detail hides local paths and raw verification commands', () => {
           id: 'verify-1',
           label: 'Typecheck',
           command: 'pnpm secret:test',
+          stage: 'project',
           required: true,
           status: 'failed',
           output: `ENOENT at ${worktreePath}\nrepo=${projectPath}`,
@@ -361,7 +362,7 @@ test('queueTicketRun captures unexpected runner exceptions as incidents', async 
   }
 })
 
-test('resolveIncidentAutomatically records retry recommendations without re-queueing the ticket', async () => {
+test('resolveIncidentAutomatically queues a retry when incident analysis recommends retry_ticket', async () => {
   const ticket = createTicket({
     title: 'Incident auto retry test',
     description: 'incident 분석 결과로 새 run 재시작을 검증한다.',
@@ -412,10 +413,13 @@ test('resolveIncidentAutomatically records retry recommendations without re-queu
 
     assert.equal(updatedIncident?.status, 'analyzed')
     assert.equal(updatedIncident?.resolution?.status, 'completed')
-    assert.equal(updatedIncident?.resolution?.actionType, 'needs_decision')
+    assert.equal(updatedIncident?.resolution?.actionType, 'retry_ticket')
     assert.equal(updatedIncident?.resolution?.startStepId, 'implement')
-    assert.equal(updatedTicket?.queuedExecution, undefined)
-    assert.equal(updatedTicket?.runState, 'created')
+    assert.match(updatedIncident?.resolution?.message ?? '', /자동 재시도를 시작했습니다/)
+    assert.equal(updatedTicket?.queuedExecution?.startStepId, 'implement')
+    assert.equal(updatedTicket?.queuedExecution?.recoveryNotes, '새 run의 implement부터 다시 시작하는 것이 가장 짧다.')
+    assert.equal(updatedTicket?.runState, 'queued')
+    assert.equal(updatedTicket?.status, 'queued')
   } finally {
     resetRunCodexTurnForIncidentAnalysisTesting()
     cleanupIncidents(ticket.id)

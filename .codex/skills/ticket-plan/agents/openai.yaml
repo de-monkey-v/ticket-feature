@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Plan"
+  short_description: "Draft approved ticket implementation plans"
+  default_prompt: "Use $ticket-plan to turn ticket context into a concrete implementation plan."

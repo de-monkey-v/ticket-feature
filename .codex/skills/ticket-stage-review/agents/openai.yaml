@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Stage Review"
+  short_description: "분석과 계획 산출물의 다음 진행 가능 여부를 판정하는 스킬"
+  default_prompt: "Use $ticket-stage-review to decide whether this ticket stage output is safe to advance."

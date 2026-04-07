@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Implement"
+  short_description: "Execute approved ticket implementation work"
+  default_prompt: "Use $ticket-implement to implement an approved ticket plan in the current worktree."

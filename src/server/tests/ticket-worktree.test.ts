@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { mkdtempSync } from 'node:fs'
@@ -10,12 +10,14 @@ import { resolveRuntimeDataPath } from '../lib/runtime-data-paths.js'
 import {
   ensureProjectDependenciesAvailableInWorktree,
   mergeTicketWorktree,
+  runAutomaticTicketWorkflow,
   resetRunCodexTurnForTesting,
   setRunCodexTurnForTesting,
 } from '../services/ticket-orchestrator.js'
 import { ticketRoutes } from '../routes/tickets.js'
 import {
   resetRunAutomaticTicketWorkflowForTesting,
+  resolveTicketMergeRun,
   retryTicketRun,
   setRunAutomaticTicketWorkflowForTesting,
 } from '../services/ticket-runner.js'
@@ -48,6 +50,20 @@ function gitCommit(cwd: string, message: string) {
   git(cwd, '-c', 'user.name=Ticket Test', '-c', 'user.email=ticket@example.com', 'commit', '-m', message)
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 3_000) {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return
+    }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  }
+
+  throw new Error('Timed out waiting for condition')
+}
+
 function createRepoFixture() {
   const root = mkdtempSync(join(tmpdir(), 'ticket-worktree-'))
   const repoPath = join(root, 'repo')
@@ -73,6 +89,7 @@ function createTicketWithWorktree(
     trackedFile?: string
     worktreeContent?: string
     diffSummary?: string
+    flowStepIds?: string[]
   }
 ) {
   const ticket = createTicket({
@@ -81,7 +98,7 @@ function createTicketWithWorktree(
     projectId: 'intentlane-codex',
     projectPath: repoPath,
     categoryId: 'feature',
-    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+    flowStepIds: opts?.flowStepIds ?? ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
   })
 
   const baseBranch = git(repoPath, 'branch', '--show-current')
@@ -275,6 +292,105 @@ test('mergeTicketWorktree rejects a changed target commit before merging', async
     const updated = getTicket(ticket.id)
     assert.equal(updated?.status, 'awaiting_merge')
     assert.equal(updated?.worktree?.status, 'ready')
+  } finally {
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('merge route returns a merge decision when tracked target changes overlap reviewed ticket files', async () => {
+  const fixture = createRepoFixture()
+  const { ticket } = createTicketWithWorktree(fixture.repoPath)
+
+  setRunCodexTurnForTesting(async () => {
+    throw new Error('merge analysis unavailable')
+  })
+
+  try {
+    writeFileSync(join(fixture.repoPath, 'tracked.txt'), 'local target change\n', 'utf8')
+
+    const app = new Hono()
+    app.route('/api', ticketRoutes)
+
+    const response = await app.request(`http://localhost/api/tickets/${ticket.id}/merge`, {
+      method: 'POST',
+    })
+
+    assert.equal(response.status, 409)
+    const payload = (await response.json()) as {
+      code: string
+      mergeBlock: {
+        issue: string
+        conflictFiles: string[]
+        options: Array<{ action: string }>
+      }
+    }
+
+    assert.equal(payload.code, 'MERGE_DECISION_REQUIRED')
+    assert.equal(payload.mergeBlock.issue, 'target_worktree_dirty')
+    assert.deepEqual(payload.mergeBlock.conflictFiles, ['tracked.txt'])
+    assert.ok(payload.mergeBlock.options.some((option) => option.action === 'preserve_target_changes_and_reconcile'))
+  } finally {
+    resetRunCodexTurnForTesting()
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('merge route returns a merge decision when untracked target files would be overwritten', async () => {
+  const fixture = createRepoFixture()
+  const { ticket } = createTicketWithWorktree(fixture.repoPath, {
+    trackedFile: 'summary.txt',
+    worktreeContent: 'ticket-created file\n',
+    diffSummary: 'Committed diff:\n summary.txt | 1 +',
+  })
+
+  setRunCodexTurnForTesting(async () => {
+    throw new Error('merge analysis unavailable')
+  })
+
+  try {
+    writeFileSync(join(fixture.repoPath, 'summary.txt'), 'local untracked content\n', 'utf8')
+
+    const app = new Hono()
+    app.route('/api', ticketRoutes)
+
+    const response = await app.request(`http://localhost/api/tickets/${ticket.id}/merge`, {
+      method: 'POST',
+    })
+
+    assert.equal(response.status, 409)
+    const payload = (await response.json()) as {
+      code: string
+      mergeBlock: {
+        issue: string
+        conflictFiles: string[]
+      }
+    }
+
+    assert.equal(payload.code, 'MERGE_DECISION_REQUIRED')
+    assert.equal(payload.mergeBlock.issue, 'target_worktree_dirty')
+    assert.deepEqual(payload.mergeBlock.conflictFiles, ['summary.txt'])
+  } finally {
+    resetRunCodexTurnForTesting()
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('mergeTicketWorktree ignores unrelated target dirty files and still merges', async () => {
+  const fixture = createRepoFixture()
+  const { ticket } = createTicketWithWorktree(fixture.repoPath)
+
+  try {
+    writeFileSync(join(fixture.repoPath, 'unrelated.txt'), 'local only\n', 'utf8')
+
+    await mergeTicketWorktree(ticket.id)
+
+    const updated = getTicket(ticket.id)
+    assert.equal(updated?.status, 'completed')
+    assert.equal(git(fixture.repoPath, 'show', 'HEAD:tracked.txt').trim(), 'feature')
+    assert.equal(readFileSync(join(fixture.repoPath, 'unrelated.txt'), 'utf8'), 'local only\n')
   } finally {
     deleteTicket(ticket.id)
     fixture.cleanup()
@@ -596,6 +712,285 @@ test('merge resolve route starts a new implement run when reapplying on the late
     assert.equal(updated?.mergeContext?.lastAttemptedAction, 'reapply_on_latest_base')
   } finally {
     resetRunAutomaticTicketWorkflowForTesting()
+    setTicketMergeContext(ticket.id, undefined)
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('merge resolve route preserves target changes on a safety branch before starting reconcile', async () => {
+  const fixture = createRepoFixture()
+  const { ticket, worktreePath } = createTicketWithWorktree(fixture.repoPath)
+  const sourceRunId = ticket.activeRunId
+  const sourceReviewedBaseCommit = ticket.worktree?.baseCommit
+  const sourceReviewedHeadCommit = ticket.worktree?.headCommit
+  let observedStartStepId: string | null = null
+
+  updateStepStatus(ticket.id, 'analyze', 'done')
+  updateStepStatus(ticket.id, 'plan', 'done')
+  setFinalReport(ticket.id, {
+    summary: 'reviewed result',
+    changedAreas: ['tracked.txt'],
+    verificationSummary: ['verify pending'],
+    goalAssessment: {
+      request: {
+        status: 'not_available',
+        evidence: [],
+      },
+      ticket: {
+        status: 'aligned',
+        evidence: ['tracked.txt 변경이 review를 통과했습니다.'],
+      },
+      acceptanceCriteria: [],
+    },
+    qualityAssessment: {
+      correctness: 'high',
+      maintainability: 'medium',
+      testConfidence: 'medium',
+      risk: 'medium',
+    },
+    blockingFindings: [],
+    residualRisks: [],
+    mergeRecommendation: 'merge',
+    output: '최종 보고',
+    createdAt: new Date().toISOString(),
+  })
+  appendStageReview(ticket.id, {
+    id: 'analyze-review-pass',
+    subjectStepId: 'analyze',
+    label: '분석',
+    attempt: 1,
+    verdict: 'pass',
+    summary: '분석 통과',
+    blockingFindings: [],
+    residualRisks: [],
+    output: '분석 통과',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  })
+  appendStageReview(ticket.id, {
+    id: 'plan-review-pass',
+    subjectStepId: 'plan',
+    label: '계획',
+    attempt: 1,
+    verdict: 'pass',
+    summary: '계획 통과',
+    blockingFindings: [],
+    residualRisks: [],
+    output: '계획 통과',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  })
+
+  setTicketMergeBlock(ticket.id, {
+    issue: 'target_worktree_dirty',
+    errorMessage: 'Merge target worktree has local changes overlapping reviewed ticket files: tracked.txt',
+    summary: 'merge target의 로컬 변경을 보존한 뒤 reconcile이 필요합니다.',
+    findings: ['tracked.txt에 merge를 막는 로컬 변경이 있습니다.'],
+    conflictFiles: ['tracked.txt'],
+    options: [
+      {
+        id: 'merge-preserve-target-and-reconcile',
+        label: '대상 로컬 변경 보존 후 reconcile',
+        action: 'preserve_target_changes_and_reconcile',
+        rationale: '로컬 변경을 safety branch에 보존한 뒤 reviewed 결과와 다시 통합합니다.',
+        recommended: true,
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  })
+
+  writeFileSync(join(fixture.repoPath, 'tracked.txt'), 'local target change\n', 'utf8')
+
+  setRunAutomaticTicketWorkflowForTesting(
+    (async ({ startStepId }) => {
+      observedStartStepId = startStepId ?? null
+    }) as Parameters<typeof setRunAutomaticTicketWorkflowForTesting>[0]
+  )
+
+  try {
+    const app = new Hono()
+    app.route('/api', ticketRoutes)
+
+    const response = await app.request(`http://localhost/api/tickets/${ticket.id}/merge/resolve`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ optionId: 'merge-preserve-target-and-reconcile' }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { ok: true })
+
+    await new Promise<void>((resolve) => queueMicrotask(resolve))
+
+    const updated = getTicket(ticket.id)
+    assert.equal(observedStartStepId, 'implement')
+    assert.equal(updated?.currentPhase, 'implement')
+    assert.equal(updated?.runState, 'queued')
+    assert.equal(updated?.mergeBlock, undefined)
+    assert.equal(updated?.runSummaries.length, 2)
+    assert.notEqual(updated?.activeRunId, sourceRunId)
+    assert.equal(updated?.mergeContext?.mode, 'reconcile_target_worktree')
+    assert.equal(updated?.mergeContext?.sourceRunId, sourceRunId)
+    assert.equal(updated?.mergeContext?.supersededWorktree?.worktreePath, worktreePath)
+    assert.equal(updated?.mergeContext?.lastAttemptedAction, 'preserve_target_changes_and_reconcile')
+    assert.equal(updated?.mergeContext?.sourceReviewedBaseCommit, sourceReviewedBaseCommit)
+    assert.equal(updated?.mergeContext?.sourceReviewedHeadCommit, sourceReviewedHeadCommit)
+    assert.ok(updated?.mergeContext?.safetyBranchName)
+    assert.ok(updated?.mergeContext?.safetyCommit)
+    assert.equal(git(fixture.repoPath, 'status', '--short'), '')
+    assert.notEqual(git(fixture.repoPath, 'branch', '--list', updated?.mergeContext?.safetyBranchName ?? ''), '')
+  } finally {
+    resetRunAutomaticTicketWorkflowForTesting()
+    setTicketMergeContext(ticket.id, undefined)
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('reconcile run pre-seeds reviewed ticket changes into the fresh worktree before implement', async () => {
+  const fixture = createRepoFixture()
+  const { ticket } = createTicketWithWorktree(fixture.repoPath, {
+    flowStepIds: ['analyze', 'plan', 'implement', 'review', 'ready'],
+  })
+  let implementHeadContent = ''
+  let implementPrompt = ''
+
+  updateStepStatus(ticket.id, 'analyze', 'done')
+  updateStepStatus(ticket.id, 'plan', 'done')
+  setFinalReport(ticket.id, {
+    summary: 'reviewed result',
+    changedAreas: ['tracked.txt'],
+    verificationSummary: ['review pending'],
+    goalAssessment: {
+      request: {
+        status: 'not_available',
+        evidence: [],
+      },
+      ticket: {
+        status: 'aligned',
+        evidence: ['tracked.txt 변경이 review를 통과했습니다.'],
+      },
+      acceptanceCriteria: [],
+    },
+    qualityAssessment: {
+      correctness: 'high',
+      maintainability: 'medium',
+      testConfidence: 'medium',
+      risk: 'medium',
+    },
+    blockingFindings: [],
+    residualRisks: [],
+    mergeRecommendation: 'merge',
+    output: '최종 보고',
+    createdAt: new Date().toISOString(),
+  })
+  appendStageReview(ticket.id, {
+    id: 'analyze-review-pass',
+    subjectStepId: 'analyze',
+    label: '분석',
+    attempt: 1,
+    verdict: 'pass',
+    summary: '분석 통과',
+    blockingFindings: [],
+    residualRisks: [],
+    output: '분석 통과',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  })
+  appendStageReview(ticket.id, {
+    id: 'plan-review-pass',
+    subjectStepId: 'plan',
+    label: '계획',
+    attempt: 1,
+    verdict: 'pass',
+    summary: '계획 통과',
+    blockingFindings: [],
+    residualRisks: [],
+    output: '계획 통과',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  })
+
+  setTicketMergeBlock(ticket.id, {
+    issue: 'target_worktree_dirty',
+    errorMessage: 'Merge target worktree has local changes overlapping reviewed ticket files: tracked.txt',
+    summary: 'merge target의 로컬 변경을 보존한 뒤 reconcile이 필요합니다.',
+    findings: ['tracked.txt에 merge를 막는 로컬 변경이 있습니다.'],
+    conflictFiles: ['tracked.txt'],
+    options: [
+      {
+        id: 'merge-preserve-target-and-reconcile',
+        label: '대상 로컬 변경 보존 후 reconcile',
+        action: 'preserve_target_changes_and_reconcile',
+        rationale: '로컬 변경을 safety branch에 보존한 뒤 reviewed 결과와 다시 통합합니다.',
+        recommended: true,
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  })
+
+  writeFileSync(join(fixture.repoPath, 'tracked.txt'), 'local target change\n', 'utf8')
+
+  setRunCodexTurnForTesting(
+    (async (opts) => {
+      if (opts.promptFile === 'prompts/ticket-implement.txt') {
+        implementPrompt = opts.prompt
+        implementHeadContent = git(opts.cwd, 'show', 'HEAD:tracked.txt').trim()
+        return {
+          threadId: 'reconcile-thread',
+          finalResponse: 'reconcile complete',
+        }
+      }
+
+      const review = {
+        verdict: 'pass' as const,
+        summary: 'reviewed ticket 변경이 새 reconcile worktree에 선적용된 상태로 다시 검토되었습니다.',
+        goalAssessment: {
+          request: {
+            status: 'not_available' as const,
+            evidence: [],
+          },
+          ticket: {
+            status: 'aligned' as const,
+            evidence: ['tracked.txt가 reviewed 결과를 유지합니다.'],
+          },
+          acceptanceCriteria: [],
+        },
+        blockingFindings: [],
+        residualRisks: [],
+        releaseNotes: ['tracked.txt 유지'],
+      }
+
+      return {
+        threadId: 'reconcile-thread',
+        finalResponse: JSON.stringify(review),
+        parsedOutput: review,
+      }
+    }) as Parameters<typeof setRunCodexTurnForTesting>[0]
+  )
+  setRunAutomaticTicketWorkflowForTesting(
+    (async (opts) => {
+      await runAutomaticTicketWorkflow(opts)
+    }) as Parameters<typeof setRunAutomaticTicketWorkflowForTesting>[0]
+  )
+
+  try {
+    await resolveTicketMergeRun(ticket.id, 'merge-preserve-target-and-reconcile')
+
+    await waitForCondition(() => getTicket(ticket.id)?.status === 'awaiting_merge')
+
+    assert.equal(implementHeadContent, 'feature')
+    assert.match(implementPrompt, /merge target의 로컬 변경을 안전하게 보존한 뒤 reviewed ticket 결과와 통합하는 reconcile 작업/)
+    assert.match(implementPrompt, /현재 새 worktree에는 review를 통과한 ticket 변경이 이미 선적용되어 있다/)
+    assert.match(implementPrompt, /보존된 target 변경 브랜치:/)
+  } finally {
+    resetRunAutomaticTicketWorkflowForTesting()
+    resetRunCodexTurnForTesting()
     setTicketMergeContext(ticket.id, undefined)
     deleteTicket(ticket.id)
     fixture.cleanup()

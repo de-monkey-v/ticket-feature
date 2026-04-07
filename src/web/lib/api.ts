@@ -234,6 +234,7 @@ export interface VerificationCommandResult {
   id: string
   label: string
   command: string
+  stage: 'scoped' | 'project'
   required: boolean
   status: 'passed' | 'failed' | 'skipped'
   output: string
@@ -255,6 +256,7 @@ export interface PublicVerificationCommandResult {
   id: string
   label: string
   command: string
+  stage: 'scoped' | 'project'
   required: boolean
   status: 'passed' | 'failed' | 'skipped'
   outputExcerpt?: string
@@ -273,7 +275,7 @@ export interface PublicVerificationFailureTestCase {
 }
 
 export interface PublicVerificationDiagnosis {
-  kind: 'environment' | 'test_regression' | 'plan_misalignment' | 'unknown'
+  kind: 'environment' | 'test_regression' | 'plan_misalignment' | 'external_blocker' | 'unknown'
   summary: string
   failingTests: PublicVerificationFailureTestCase[]
 }
@@ -339,6 +341,7 @@ export type TicketMergeIssueKind =
   | 'base_branch_changed'
   | 'base_commit_changed'
   | 'head_changed_after_review'
+  | 'target_worktree_dirty'
   | 'merge_conflict'
   | 'rebase_conflict_text'
   | 'rebase_conflict_code'
@@ -349,6 +352,7 @@ export type TicketMergeResolutionAction =
   | 'rebase_and_revalidate'
   | 'revalidate_current_worktree'
   | 'reapply_on_latest_base'
+  | 'preserve_target_changes_and_reconcile'
   | 'restart_from_plan'
   | 'discard_worktree'
 
@@ -399,6 +403,9 @@ export interface TicketSummary {
   projectId: string
   categoryId: string
   linkedRequestId?: string
+  blockedByTicketId?: string
+  blockingReason?: 'external_verify_blocker'
+  originTicketId?: string
   status: TicketRunState
   runState: TicketRunState
   currentPhase: string | null

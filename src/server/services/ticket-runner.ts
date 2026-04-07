@@ -3,6 +3,7 @@ import {
   appendTicketClarification,
   appendTimelineEvent,
   clearTicketStopRequest,
+  enqueueTicketExecution,
   emitTicketEvent,
   getTicket,
   getTicketRetryPlan,
@@ -13,18 +14,16 @@ import {
   reloadTicketsFromDisk,
   requestTicketStop,
   resumeTicketFromCurrentRun,
-  setTicketCurrentPhase,
   setTicketMergeBlock,
   setTicketMergeContext,
   setTicketRepairLoop,
-  setTicketQueuedExecution,
-  setTicketRecoveryRequired,
   setTicketRunState,
   type TicketQueuedExecution,
 } from './tickets.js'
 import {
   discardTicketWorktree,
   destroyTicketWorktree,
+  preserveTargetWorktreeForMergeReconcile,
   prepareTicketWorktreeForMergeResolution,
   runAutomaticTicketWorkflow,
 } from './ticket-orchestrator.js'
@@ -260,28 +259,14 @@ export function isTicketRunActive(ticketId: string) {
 }
 
 export function queueTicketRun(ticketId: string, startStepId: StartStepId = 'analyze', recoveryNotes?: string) {
-  const ticket = getTicket(ticketId)
-  if (!ticket) {
-    throw new Error('Ticket not found')
-  }
-
-  if (activeRuns.has(ticketId) || ticket.runState === 'queued' || ticket.runState === 'running') {
+  if (activeRuns.has(ticketId)) {
     return false
   }
 
-  setTicketRecoveryRequired(ticketId, false)
-  setTicketCurrentPhase(ticketId, startStepId)
-  setTicketQueuedExecution(ticketId, {
-    startStepId,
-    recoveryNotes,
-    queuedAt: new Date().toISOString(),
-  })
-  setTicketRunState(ticketId, 'queued')
-  appendTimelineEvent(ticketId, {
-    type: 'system',
-    title: '자동 실행 대기열에 등록되었습니다.',
-    body: `${startStepId} 단계부터 이어서 실행합니다.${recoveryNotes ? '\n\n복구 지침을 함께 반영합니다.' : ''}`,
-  })
+  const queued = enqueueTicketExecution(ticketId, startStepId, recoveryNotes)
+  if (!queued) {
+    return false
+  }
 
   if (shouldStartRunsLocally()) {
     queueMicrotask(() => {
@@ -289,7 +274,7 @@ export function queueTicketRun(ticketId: string, startStepId: StartStepId = 'ana
     })
   }
 
-  return true
+  return queued
 }
 
 export async function stopTicketRun(ticketId: string) {
@@ -458,6 +443,66 @@ export async function resolveTicketMergeRun(ticketId: string, optionId: string) 
       body: option.rationale,
     })
     queueTicketRun(ticketId, 'implement', 'merge 충돌을 해결하기 위해 최신 기준 브랜치에서 기존 reviewed 변경 의도를 다시 적용합니다.')
+    return
+  }
+
+  if (option.action === 'preserve_target_changes_and_reconcile') {
+    const sourceWorktree = ticket.worktree ? { ...ticket.worktree } : undefined
+    const sourceRunId = ticket.activeRunId ?? undefined
+    const sourceFinalReportOutput = ticket.finalReport?.output
+    const sourceReadyOutput = ticket.steps.ready?.output
+    const sourceDiffSummary = ticket.worktree?.diffSummary
+    const sourceConflictFiles = [...(ticket.mergeBlock?.conflictFiles ?? ticket.mergeContext?.conflictFiles ?? [])]
+    const sourceAnalysisKey = ticket.mergeContext?.analysisKey
+    const sourceCurrentBaseCommit = ticket.mergeContext?.currentBaseCommit
+    const sourceHeadCommit = ticket.mergeContext?.headCommit
+    const sourceReviewedBaseCommit = ticket.worktree?.baseCommit
+    const sourceReviewedHeadCommit = ticket.worktree?.headCommit
+    const preservedTarget = await preserveTargetWorktreeForMergeReconcile(ticketId)
+    const reset = applyTicketRetryPlan(ticketId, {
+      id: 'merge-preserve-target-and-reconcile',
+      label: option.label,
+      startStepId: 'implement',
+      executionMode: 'new_run',
+      sessionMode: 'new_thread',
+      shouldCleanupWorktree: false,
+    })
+    if (!reset) {
+      throw new Error('Ticket is not retryable from the selected merge option')
+    }
+
+    setTicketMergeContext(ticketId, {
+      mode: 'reconcile_target_worktree',
+      analysisKey: sourceAnalysisKey,
+      currentBaseCommit: sourceCurrentBaseCommit ?? preservedTarget.targetHeadCommit,
+      headCommit: sourceHeadCommit,
+      conflictFiles: sourceConflictFiles,
+      lastAttemptedAction: option.action,
+      sourceRunId,
+      sourceFinalReportOutput,
+      sourceReadyOutput,
+      sourceDiffSummary,
+      sourceReviewedBaseCommit,
+      sourceReviewedHeadCommit,
+      targetBranchName: preservedTarget.targetBranchName,
+      targetHeadCommit: preservedTarget.targetHeadCommit,
+      safetyBranchName: preservedTarget.safetyBranchName,
+      safetyCommit: preservedTarget.safetyCommit,
+      safetyDiffSummary: preservedTarget.safetyDiffSummary,
+      reconcileSeedApplied: false,
+      supersededWorktree: sourceWorktree,
+    })
+
+    appendTimelineEvent(ticketId, {
+      type: 'system',
+      title: 'merge 대상 로컬 변경을 보존하고 reconcile run을 시작합니다.',
+      body: `${option.rationale}\n보존 브랜치: ${preservedTarget.safetyBranchName}`,
+    })
+    queueTicketRun(
+      ticketId,
+      'implement',
+      'merge 대상 브랜치의 로컬 변경을 보존한 뒤 reviewed ticket 결과와 reconcile합니다.'
+    )
     return
   }
 

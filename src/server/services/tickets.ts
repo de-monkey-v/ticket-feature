@@ -36,6 +36,8 @@ export type TicketRunState =
 
 export type TicketRetryExecutionMode = 'same_run' | 'new_run'
 export type TicketRetrySessionMode = 'reuse_thread' | 'new_thread'
+export type VerificationCommandStage = 'scoped' | 'project'
+export type TicketBlockingReason = 'external_verify_blocker'
 
 export interface StepResult {
   status: StepStatus
@@ -50,6 +52,7 @@ export interface VerificationCommandResult {
   id: string
   label: string
   command: string
+  stage: VerificationCommandStage
   required: boolean
   status: 'passed' | 'failed' | 'skipped'
   output: string
@@ -74,13 +77,24 @@ export interface VerificationDiagnosisCommand {
 }
 
 export interface VerificationDiagnosis {
-  kind: 'environment' | 'test_regression' | 'plan_misalignment' | 'unknown'
+  kind: 'environment' | 'test_regression' | 'plan_misalignment' | 'external_blocker' | 'unknown'
   fingerprint: string
   summary: string
   failingTests: VerificationFailureTestCase[]
   failingCommands: VerificationDiagnosisCommand[]
   suspectedAreas: string[]
   recommendedRecovery: 'new_run_implement' | 'new_run_plan' | 'needs_decision'
+}
+
+export interface ScopedVerificationCommand {
+  label: string
+  command: string
+  timeoutMs?: number
+}
+
+export interface ScopedVerificationPlan {
+  rationale: string
+  commands: ScopedVerificationCommand[]
 }
 
 export interface VerificationRun {
@@ -242,6 +256,7 @@ export type TicketMergeIssueKind =
   | 'base_branch_changed'
   | 'base_commit_changed'
   | 'head_changed_after_review'
+  | 'target_worktree_dirty'
   | 'merge_conflict'
   | 'rebase_conflict_text'
   | 'rebase_conflict_code'
@@ -252,6 +267,7 @@ export type TicketMergeResolutionAction =
   | 'rebase_and_revalidate'
   | 'revalidate_current_worktree'
   | 'reapply_on_latest_base'
+  | 'preserve_target_changes_and_reconcile'
   | 'restart_from_plan'
   | 'discard_worktree'
 
@@ -264,7 +280,7 @@ export interface TicketMergeOption {
 }
 
 export interface TicketMergeContext {
-  mode?: 'reapply_on_latest_base'
+  mode?: 'reapply_on_latest_base' | 'reconcile_target_worktree'
   analysisKey?: string
   currentBaseCommit?: string
   headCommit?: string
@@ -274,6 +290,15 @@ export interface TicketMergeContext {
   sourceFinalReportOutput?: string
   sourceReadyOutput?: string
   sourceDiffSummary?: string
+  sourceReviewedBaseCommit?: string
+  sourceReviewedHeadCommit?: string
+  targetBranchName?: string
+  targetHeadCommit?: string
+  safetyBranchName?: string
+  safetyCommit?: string
+  safetyDiffSummary?: string
+  reconcileSeedApplied?: boolean
+  reconcileSeedHeadCommit?: string
   supersededWorktree?: TicketWorktree
 }
 
@@ -304,6 +329,7 @@ export interface TicketRun {
   timeline: TicketTimelineEvent[]
   worktree?: TicketWorktree
   repairLoop?: TicketRepairLoop
+  scopedVerification?: ScopedVerificationPlan
   createdAt: string
   updatedAt: string
 }
@@ -317,6 +343,9 @@ export interface Ticket {
   categoryId: string
   flowStepIds: string[]
   linkedRequestId?: string
+  blockedByTicketId?: string
+  blockingReason?: TicketBlockingReason
+  originTicketId?: string
   activeRunId: string | null
   runSummaries: TicketRunSummary[]
   status: TicketRunState
@@ -340,6 +369,7 @@ export interface Ticket {
   timeline: TicketTimelineEvent[]
   worktree?: TicketWorktree
   repairLoop?: TicketRepairLoop
+  scopedVerification?: ScopedVerificationPlan
   createdAt: string
   updatedAt: string
 }
@@ -350,6 +380,9 @@ export interface PublicTicketSummary {
   projectId: string
   categoryId: string
   linkedRequestId?: string
+  blockedByTicketId?: string
+  blockingReason?: TicketBlockingReason
+  originTicketId?: string
   status: TicketRunState
   runState: TicketRunState
   currentPhase: string | null
@@ -372,6 +405,7 @@ export interface PublicVerificationCommandResult {
   id: string
   label: string
   command: string
+  stage: VerificationCommandStage
   required: boolean
   status: 'passed' | 'failed' | 'skipped'
   outputExcerpt?: string
@@ -439,6 +473,7 @@ interface PersistedVerificationCommandResult {
   id: string
   label: string
   command: string
+  stage?: VerificationCommandStage
   required: boolean
   status: 'passed' | 'failed' | 'skipped'
   outputPath?: string
@@ -458,7 +493,7 @@ interface PersistedVerificationRun {
 }
 
 interface PersistedTicketRun {
-  version: 2 | 3 | 4
+  version: 2 | 3 | 4 | 5
   id: string
   status: TicketRunState
   currentPhase: string | null
@@ -475,12 +510,13 @@ interface PersistedTicketRun {
   timeline: TicketTimelineEvent[]
   worktree?: TicketWorktree
   repairLoop?: TicketRepairLoop
+  scopedVerification?: ScopedVerificationPlan
   createdAt: string
   updatedAt: string
 }
 
 interface PersistedTicketSummary {
-  version: 2 | 3 | 4
+  version: 2 | 3 | 4 | 5
   id: string
   title: string
   description: string
@@ -489,6 +525,9 @@ interface PersistedTicketSummary {
   categoryId: string
   flowStepIds: string[]
   linkedRequestId?: string
+  blockedByTicketId?: string
+  blockingReason?: TicketBlockingReason
+  originTicketId?: string
   activeRunId: string | null
   runSummaries: TicketRunSummary[]
   status: TicketRunState
@@ -501,6 +540,7 @@ interface PersistedTicketSummary {
   mergeBlock?: TicketMergeBlock
   mergeContext?: TicketMergeContext
   repairLoop?: TicketRepairLoop
+  scopedVerification?: ScopedVerificationPlan
   createdAt: string
   updatedAt: string
 }
@@ -611,6 +651,7 @@ function cloneVerificationRuns(runs: VerificationRun[]) {
     diagnosis: run.diagnosis ? normalizeVerificationDiagnosis(run.diagnosis) : undefined,
     commands: run.commands.map((command) => ({
       ...command,
+      stage: command.stage,
       output: command.output,
     })),
   }))
@@ -681,6 +722,21 @@ function cloneSteps(steps: Record<string, StepResult>) {
   return Object.fromEntries(Object.entries(steps).map(([stepId, step]) => [stepId, cloneStepResult(step)]))
 }
 
+function cloneScopedVerificationPlan(plan: ScopedVerificationPlan | undefined) {
+  if (!plan) {
+    return undefined
+  }
+
+  return {
+    rationale: plan.rationale,
+    commands: plan.commands.map((command) => ({
+      label: command.label,
+      command: command.command,
+      timeoutMs: command.timeoutMs,
+    })),
+  }
+}
+
 function resolvePlanningThreadId(raw: {
   planningThreadId?: string | null
   threadId?: string | null
@@ -718,6 +774,7 @@ function cloneRun(run: TicketRun): TicketRun {
     timeline: cloneTimeline(run.timeline),
     worktree: cloneWorktree(run.worktree),
     repairLoop: cloneRepairLoop(run.repairLoop),
+    scopedVerification: cloneScopedVerificationPlan(run.scopedVerification),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   }
@@ -778,6 +835,7 @@ function normalizeVerificationRuns(runs?: VerificationRun[]) {
     diagnosis: normalizeVerificationDiagnosis(run.diagnosis),
     commands: run.commands.map((command) => ({
       ...command,
+      stage: command.stage ?? 'project',
       output: command.output ?? '',
     })),
   })) ?? []
@@ -843,6 +901,9 @@ function buildTicketMarkdown(ticket: Ticket) {
     `**Updated**: ${ticket.updatedAt}`,
     `**Project ID**: ${ticket.projectId}`,
     `**Category**: ${ticket.categoryId}`,
+    `**Blocked By Ticket**: ${ticket.blockedByTicketId ?? '없음'}`,
+    `**Blocking Reason**: ${ticket.blockingReason ?? '없음'}`,
+    `**Origin Ticket**: ${ticket.originTicketId ?? '없음'}`,
     `**Flow Steps**: ${ticket.flowStepIds.join(', ')}`,
     `**Project**: ${ticket.projectPath}`,
     `**Active Run**: ${ticket.activeRunId ?? '없음'}`,
@@ -884,6 +945,9 @@ function buildRunMarkdown(run: TicketRun, flowStepIds: string[]) {
   if (run.repairLoop) {
     content += `**Repair Loop**: ${run.repairLoop.gate} cycle=${run.repairLoop.cycle} status=${run.repairLoop.status}\n`
   }
+  if (run.scopedVerification?.commands.length) {
+    content += `**Scoped Verification**: ${run.scopedVerification.commands.map((command) => command.command).join(' | ')}\n`
+  }
 
   for (const stepId of flowStepIds) {
     const step = run.steps[stepId]
@@ -913,6 +977,7 @@ function buildRunMarkdown(run: TicketRun, flowStepIds: string[]) {
       content += `\n### Attempt ${verificationRun.attempt} (${verificationRun.status})\n`
       for (const command of verificationRun.commands) {
         content += `\n- ${command.label} [${command.status}]`
+        content += `\n  Stage: ${command.stage}`
         content += `\n  Command: ${command.command}`
         if (command.exitCode != null) {
           content += `\n  Exit code: ${command.exitCode}`
@@ -976,6 +1041,7 @@ function buildRunFromTicket(ticket: Ticket): TicketRun {
     timeline: ticket.timeline,
     worktree: ticket.worktree,
     repairLoop: ticket.repairLoop,
+    scopedVerification: ticket.scopedVerification,
     createdAt: now,
     updatedAt: ticket.updatedAt,
   }
@@ -1032,6 +1098,7 @@ function syncActiveRun(ticket: Ticket) {
   run.timeline = ticket.timeline
   run.worktree = ticket.worktree
   run.repairLoop = ticket.repairLoop
+  run.scopedVerification = ticket.scopedVerification
   run.updatedAt = ticket.updatedAt
 
   const summary = ticket.runSummaries.find((entry) => entry.id === ticket.activeRunId)
@@ -1079,7 +1146,7 @@ function ensureTicketsDir(projectId?: string) {
 
 function toPersistedTicketSummary(ticket: Ticket): PersistedTicketSummary {
   return {
-    version: 4,
+    version: 5,
     id: ticket.id,
     title: ticket.title,
     description: ticket.description,
@@ -1088,6 +1155,9 @@ function toPersistedTicketSummary(ticket: Ticket): PersistedTicketSummary {
     categoryId: ticket.categoryId,
     flowStepIds: [...ticket.flowStepIds],
     linkedRequestId: ticket.linkedRequestId,
+    blockedByTicketId: ticket.blockedByTicketId,
+    blockingReason: ticket.blockingReason,
+    originTicketId: ticket.originTicketId,
     activeRunId: ticket.activeRunId,
     runSummaries: cloneRunSummaries(ticket.runSummaries),
     status: ticket.status,
@@ -1106,6 +1176,7 @@ function toPersistedTicketSummary(ticket: Ticket): PersistedTicketSummary {
     mergeBlock: cloneMergeBlock(ticket.mergeBlock),
     mergeContext: cloneMergeContext(ticket.mergeContext),
     repairLoop: cloneRepairLoop(ticket.repairLoop),
+    scopedVerification: cloneScopedVerificationPlan(ticket.scopedVerification),
     createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt,
   }
@@ -1139,6 +1210,7 @@ function toPersistedTicketRun(ticket: Ticket, run: TicketRun): PersistedTicketRu
       id: command.id,
       label: command.label,
       command: command.command,
+      stage: command.stage,
       required: command.required,
       status: command.status,
       outputPath: command.output ? `diagnostics/verify/${verificationRun.attempt}-${command.id}.log` : undefined,
@@ -1150,7 +1222,7 @@ function toPersistedTicketRun(ticket: Ticket, run: TicketRun): PersistedTicketRu
   }))
 
   return {
-    version: 4,
+    version: 5,
     id: run.id,
     status: run.status,
     currentPhase: run.currentPhase,
@@ -1166,6 +1238,7 @@ function toPersistedTicketRun(ticket: Ticket, run: TicketRun): PersistedTicketRu
     timeline: cloneTimeline(run.timeline),
     worktree: cloneWorktree(run.worktree),
     repairLoop: cloneRepairLoop(run.repairLoop),
+    scopedVerification: cloneScopedVerificationPlan(run.scopedVerification),
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
   }
@@ -1269,6 +1342,7 @@ function createRun(ticket: Ticket, runId: string, now: string): TicketRun {
     timeline: ticket.timeline,
     worktree: ticket.worktree,
     repairLoop: ticket.repairLoop,
+    scopedVerification: ticket.scopedVerification,
     createdAt: now,
     updatedAt: now,
   }
@@ -1310,6 +1384,7 @@ function cloneCarryOverRun(source: TicketRun, ticket: Ticket, startStepId: Ticke
     timeline: [],
     worktree: undefined,
     repairLoop: undefined,
+    scopedVerification: startStepId === 'implement' ? cloneScopedVerificationPlan(source.scopedVerification) : undefined,
     createdAt: now,
     updatedAt: now,
   }
@@ -1377,6 +1452,7 @@ function loadPersistedRun(ticketSummary: PersistedTicketSummary, runId: string) 
       id: command.id,
       label: command.label,
       command: command.command,
+      stage: command.stage ?? 'project',
       required: command.required,
       status: command.status,
       output: command.outputPath ? readTextIfExists(resolve(runDir, command.outputPath)) : '',
@@ -1403,6 +1479,7 @@ function loadPersistedRun(ticketSummary: PersistedTicketSummary, runId: string) 
     timeline: rawRun.timeline ?? [],
     worktree: rawRun.worktree,
     repairLoop: cloneRepairLoop(rawRun.repairLoop),
+    scopedVerification: cloneScopedVerificationPlan(rawRun.scopedVerification),
     createdAt: rawRun.createdAt,
     updatedAt: rawRun.updatedAt,
   } satisfies TicketRun
@@ -1432,6 +1509,9 @@ function loadTicketFromStorage(ticketDir: string) {
     categoryId: rawSummary.categoryId,
     flowStepIds: rawSummary.flowStepIds,
     linkedRequestId: rawSummary.linkedRequestId,
+    blockedByTicketId: rawSummary.blockedByTicketId,
+    blockingReason: rawSummary.blockingReason,
+    originTicketId: rawSummary.originTicketId,
     activeRunId: activeRun?.id ?? rawSummary.activeRunId ?? null,
     runSummaries,
     status: rawSummary.status ?? rawSummary.runState ?? activeRun?.status ?? 'created',
@@ -1461,6 +1541,7 @@ function loadTicketFromStorage(ticketDir: string) {
     finalReport: activeRun?.finalReport,
     timeline: activeRun?.timeline ?? [],
     worktree: activeRun?.worktree,
+    scopedVerification: cloneScopedVerificationPlan(activeRun?.scopedVerification ?? rawSummary.scopedVerification),
     createdAt: rawSummary.createdAt,
     updatedAt: rawSummary.updatedAt,
   }
@@ -1503,6 +1584,9 @@ function normalizeLegacyTicket(
     categoryId: raw.categoryId,
     flowStepIds: raw.flowStepIds,
     linkedRequestId: raw.linkedRequestId,
+    blockedByTicketId: raw.blockedByTicketId,
+    blockingReason: raw.blockingReason,
+    originTicketId: raw.originTicketId,
     activeRunId: runId,
     runSummaries,
     status: raw.status ?? raw.runState ?? 'created',
@@ -1524,6 +1608,7 @@ function normalizeLegacyTicket(
     timeline: raw.timeline ?? [],
     worktree: raw.worktree,
     repairLoop: cloneRepairLoop(raw.repairLoop),
+    scopedVerification: cloneScopedVerificationPlan(raw.scopedVerification),
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
   }
@@ -1813,6 +1898,7 @@ export function createTicket(opts: {
   categoryId: string
   flowStepIds: string[]
   linkedRequestId?: string
+  originTicketId?: string
 }): Ticket {
   const id = `TKT-${nanoid(6)}`
   const now = new Date().toISOString()
@@ -1828,6 +1914,9 @@ export function createTicket(opts: {
     categoryId: opts.categoryId,
     flowStepIds: opts.flowStepIds,
     linkedRequestId: opts.linkedRequestId,
+    blockedByTicketId: undefined,
+    blockingReason: undefined,
+    originTicketId: opts.originTicketId,
     activeRunId,
     runSummaries: [
       {
@@ -1854,6 +1943,7 @@ export function createTicket(opts: {
     verificationRuns: [],
     reviewRuns: [],
     stageReviews: [],
+    scopedVerification: undefined,
     timeline: [
       {
         id: nanoid(8),
@@ -1894,6 +1984,9 @@ export function toPublicTicketSummary(ticket: Ticket): PublicTicketSummary {
     projectId: ticket.projectId,
     categoryId: ticket.categoryId,
     linkedRequestId: ticket.linkedRequestId,
+    blockedByTicketId: ticket.blockedByTicketId,
+    blockingReason: ticket.blockingReason,
+    originTicketId: ticket.originTicketId,
     status: ticket.status,
     runState: ticket.runState,
     currentPhase: ticket.currentPhase,
@@ -1993,6 +2086,7 @@ function formatPublicVerificationDiagnosisKind(kind: VerificationDiagnosis['kind
   if (kind === 'environment') return '검증 환경'
   if (kind === 'test_regression') return '테스트 회귀'
   if (kind === 'plan_misalignment') return '계획 정렬 문제'
+  if (kind === 'external_blocker') return '프로젝트 기준 회귀'
   return '추가 확인 필요'
 }
 
@@ -2030,6 +2124,7 @@ function buildPublicVerificationStepOutput(ticket: Pick<Ticket, 'projectPath'> |
           const details = [
             `### ${command.label} [${formatPublicVerificationCommandStatus(command.status)}]`,
             '',
+            `- 단계: ${command.stage === 'scoped' ? '범위 검증' : '프로젝트 검증'}`,
             `- 명령어: \`${command.command}\``,
           ]
 
@@ -2131,6 +2226,7 @@ export function toPublicTicketRun(ticketId: string, runId: string): PublicTicket
           id: command.id,
           label: command.label,
           command: command.command,
+          stage: command.stage,
           required: command.required,
           status: command.status,
           outputExcerpt: excerpt.text,
@@ -2349,11 +2445,42 @@ export function updateTicketWorktree(ticketId: string, patch: Partial<TicketWork
   })
 }
 
+function maybeResumeOriginTicketFromCompletedBlocker(blockerTicket: Ticket) {
+  if (blockerTicket.status !== 'completed' || !blockerTicket.originTicketId) {
+    return
+  }
+
+  const originTicket = tickets.get(blockerTicket.originTicketId)
+  if (!originTicket || originTicket.blockedByTicketId !== blockerTicket.id) {
+    return
+  }
+
+  if (!prepareTicketForMergeValidation(originTicket.id, 'verify')) {
+    return
+  }
+
+  setTicketBlockerLink(originTicket.id, undefined)
+  appendTimelineEvent(originTicket.id, {
+    type: 'system',
+    title: `차단 티켓 ${blockerTicket.id}이 완료되어 자동 검증을 재개합니다.`,
+    body: '범위 밖 전체 검증 회귀가 해결되어 verify 단계부터 다시 실행합니다.',
+  })
+  enqueueTicketExecution(
+    originTicket.id,
+    'verify',
+    `차단 티켓 ${blockerTicket.id}이 전체 검증 회귀를 해결했습니다. verify와 review를 다시 실행합니다.`
+  )
+}
+
 export function setTicketStatus(ticketId: string, status: TicketRunState) {
-  updateTicket(ticketId, (ticket) => {
+  const updated = updateTicket(ticketId, (ticket) => {
     ticket.status = status
     ticket.runState = status
   })
+
+  if (updated) {
+    maybeResumeOriginTicketFromCompletedBlocker(updated)
+  }
 }
 
 export function setTicketRunState(ticketId: string, runState: TicketRunState) {
@@ -2422,6 +2549,66 @@ export function clearTicketRepairLoop(ticketId: string) {
   updateTicket(ticketId, (ticket) => {
     delete ticket.repairLoop
   })
+}
+
+export function setTicketScopedVerification(ticketId: string, scopedVerification?: ScopedVerificationPlan) {
+  updateTicket(ticketId, (ticket) => {
+    ticket.scopedVerification = cloneScopedVerificationPlan(scopedVerification)
+  })
+}
+
+export function setTicketBlockerLink(
+  ticketId: string,
+  blockedByTicketId?: string,
+  blockingReason?: TicketBlockingReason
+) {
+  updateTicket(ticketId, (ticket) => {
+    if (blockedByTicketId) {
+      ticket.blockedByTicketId = blockedByTicketId
+      ticket.blockingReason = blockingReason
+      return
+    }
+
+    delete ticket.blockedByTicketId
+    delete ticket.blockingReason
+  })
+}
+
+export function enqueueTicketExecution(
+  ticketId: string,
+  startStepId: TicketQueuedExecution['startStepId'] = 'analyze',
+  recoveryNotes?: string
+) {
+  const ticket = tickets.get(ticketId)
+  if (!ticket) {
+    throw new Error('Ticket not found')
+  }
+
+  if (ticket.runState === 'queued' || ticket.runState === 'running') {
+    return false
+  }
+
+  updateTicket(ticketId, (current) => {
+    current.recoveryRequired = false
+    current.currentPhase = startStepId
+    current.queuedExecution = {
+      startStepId,
+      recoveryNotes,
+      queuedAt: new Date().toISOString(),
+    }
+    current.runState = 'queued'
+    current.status = 'queued'
+    delete current.stopRequestedAt
+    current.timeline.push({
+      id: nanoid(8),
+      type: 'system',
+      title: '자동 실행 대기열에 등록되었습니다.',
+      body: `${startStepId} 단계부터 이어서 실행합니다.${recoveryNotes ? '\n\n복구 지침을 함께 반영합니다.' : ''}`,
+      createdAt: new Date().toISOString(),
+    })
+  })
+
+  return true
 }
 
 export function setTicketRecoveryRequired(ticketId: string, recoveryRequired: boolean) {
@@ -2631,6 +2818,7 @@ export function applyTicketRetryPlan(ticketId: string, plan: TicketRetryPlan): T
   delete ticket.finalReport
   ticket.timeline = newRun.timeline
   delete ticket.worktree
+  ticket.scopedVerification = cloneScopedVerificationPlan(newRun.scopedVerification)
   ticket.updatedAt = now
 
   syncActiveRun(ticket)

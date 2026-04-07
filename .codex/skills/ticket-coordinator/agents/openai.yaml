@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Coordinator"
+  short_description: "실패한 티켓 run의 복구 경로를 안전하게 조율하는 스킬"
+  default_prompt: "Use $ticket-coordinator to choose the safest recovery path for this failed ticket run."

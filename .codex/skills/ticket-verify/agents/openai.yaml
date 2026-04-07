@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Verify"
+  short_description: "Summarize and diagnose ticket verification runs"
+  default_prompt: "Use $ticket-verify to analyze ticket verification command results and recommend the next recovery path."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Incident Analyze"
+  short_description: "저장된 incident 번들의 원인과 재시작 지점을 분석하는 스킬"
+  default_prompt: "Use $ticket-incident-analyze to diagnose this stored ticket incident and suggest the right restart point."

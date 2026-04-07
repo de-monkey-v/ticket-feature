@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Merge Decision"
+  short_description: "merge 막힘 상황에서 안전한 자동 복구 액션을 고르는 스킬"
+  default_prompt: "Use $ticket-merge-decision to choose the safest automated action for this blocked ticket merge."

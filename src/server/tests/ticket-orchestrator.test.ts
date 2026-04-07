@@ -29,7 +29,10 @@ import {
   deleteTicket,
   getTicket,
   replaceStepOutput,
+  setTicketBlockerLink,
   setTicketPlanningThreadId,
+  setTicketScopedVerification,
+  setTicketStatus,
   updateStepStatus,
   type VerificationRun,
 } from '../services/tickets.js'
@@ -163,6 +166,19 @@ function buildCoordinatorStubDecision(prompt: string) {
 }
 
 function maybeBuildCoordinatorStubResult(opts: { prompt: string; promptFile?: string }) {
+  if (opts.promptFile === 'prompts/ticket-verify.txt') {
+    const diagnosis = {
+      summary: '검증 실패를 구현 보완 이슈로 요약합니다.',
+      recommendedRecovery: 'new_run_implement' as const,
+    }
+
+    return {
+      threadId: 'thread-test',
+      finalResponse: JSON.stringify(diagnosis),
+      parsedOutput: diagnosis,
+    }
+  }
+
   if (opts.promptFile !== 'prompts/ticket-coordinator.txt') {
     return null
   }
@@ -202,6 +218,39 @@ function cleanupIncidents(ticketId: string, projectId = 'intentlane-codex') {
   }
 }
 
+function markTicketReadyForVerify(ticketId: string) {
+  replaceStepOutput(ticketId, 'analyze', '## 분석 결과\n\n기존 분석')
+  replaceStepOutput(ticketId, 'plan', '## 구현 계획\n\n기존 계획')
+  updateStepStatus(ticketId, 'analyze', 'done')
+  updateStepStatus(ticketId, 'plan', 'done')
+  appendStageReview(ticketId, {
+    id: `${ticketId}-analyze-pass`,
+    subjectStepId: 'analyze',
+    label: '분석',
+    attempt: 1,
+    verdict: 'pass',
+    summary: '분석 통과',
+    blockingFindings: [],
+    residualRisks: [],
+    output: '분석 통과',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  })
+  appendStageReview(ticketId, {
+    id: `${ticketId}-plan-pass`,
+    subjectStepId: 'plan',
+    label: '계획',
+    attempt: 1,
+    verdict: 'pass',
+    summary: '계획 통과',
+    blockingFindings: [],
+    residualRisks: [],
+    output: '계획 통과',
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+  })
+}
+
 test('ticket flow keeps maxAttempts in private config only', () => {
   const config = loadConfig()
   const analyzeStep = config.flows.ticket.steps.find((step) => step.id === 'analyze')
@@ -231,6 +280,7 @@ test('classifyVerificationFailure detects dependency and tooling setup issues as
         id: 'typecheck',
         label: 'Typecheck',
         command: 'pnpm typecheck',
+        stage: 'project',
         required: true,
         status: 'failed',
         output: [
@@ -263,6 +313,7 @@ test('classifyVerificationFailure detects Gradle wrapper path issues as environm
         id: 'test',
         label: 'Test',
         command: './gradlew test',
+        stage: 'project',
         required: true,
         status: 'failed',
         output: [
@@ -340,6 +391,8 @@ test('runTicketWorkflow retries analyze with stage review feedback and verificat
 
     assert.equal(analyzeReviews.length, 2)
     assert.equal(analyzeReviews.at(-1)?.verdict, 'pass')
+    assert.match(prompts[0] || '', /Use \$ticket-analyze/)
+    assert.match(prompts[1] || '', /Use \$ticket-stage-review/)
     assert.match(prompts[0] || '', /pnpm typecheck/)
     assert.match(prompts[0] || '', /pnpm test/)
     assert.match(prompts[2] || '', /이전 분석 리뷰 피드백:/)
@@ -571,8 +624,8 @@ test('runAutomaticTicketWorkflow marks later verification commands as skipped af
 
   setRunCodexTurnForTesting(
     (async (opts) => {
-      if (opts.promptFile !== 'prompts/ticket-coordinator.txt') {
-        throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
+      if (opts.promptFile === 'prompts/ticket-verify.txt') {
+        return maybeBuildCoordinatorStubResult(opts) as NonNullable<ReturnType<typeof maybeBuildCoordinatorStubResult>>
       }
 
       const decision = {
@@ -607,6 +660,262 @@ test('runAutomaticTicketWorkflow marks later verification commands as skipped af
     resetRunCodexTurnForTesting()
     deleteTicket(ticket.id)
     fixture.cleanup()
+  }
+})
+
+test('runAutomaticTicketWorkflow invokes the verify skill before recovery coordination', async () => {
+  const fixture = createRepoFixture()
+  const ticket = createTicket({
+    title: 'Verify skill invocation test',
+    description: 'verify 실패 진단에 ticket-verify skill을 사용해야 한다.',
+    projectId: 'intentlane-codex',
+    projectPath: fixture.repoPath,
+    categoryId: 'feature',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+  })
+
+  mkdirSync(join(fixture.repoPath, 'node_modules'), { recursive: true })
+  writeFileSync(
+    join(fixture.repoPath, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'verify-skill-fixture',
+        private: true,
+        scripts: {
+          typecheck: "node -e \"console.error('Expected 200 but got 500'); process.exit(1)\"",
+          test: "node -e \"process.exit(0)\"",
+          build: "node -e \"process.exit(0)\"",
+        },
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+
+  let verifyPrompt = ''
+  let coordinatorPrompt = ''
+  let verifyAdditionalDirectories: string[] | undefined
+  setRunCodexTurnForTesting(
+    (async (opts) => {
+      if (opts.promptFile === 'prompts/ticket-verify.txt') {
+        verifyPrompt = opts.prompt
+        verifyAdditionalDirectories = opts.additionalDirectories
+        const diagnosis = {
+          summary: 'skill이 검증 실패를 구현 보완 이슈로 요약했습니다.',
+          recommendedRecovery: 'new_run_implement' as const,
+        }
+        return {
+          threadId: 'thread-verify',
+          finalResponse: JSON.stringify(diagnosis),
+          parsedOutput: diagnosis,
+        }
+      }
+
+      if (opts.promptFile === 'prompts/ticket-coordinator.txt') {
+        coordinatorPrompt = opts.prompt
+        const decision = {
+          kind: 'needs_decision' as const,
+          rationale: '복구 경로는 사람이 최종 선택합니다.',
+          remediationNotes: 'verify skill summary를 바탕으로 경로를 선택하세요.',
+          confidence: 'high' as const,
+        }
+        return {
+          threadId: 'thread-coordinator',
+          finalResponse: JSON.stringify(decision),
+          parsedOutput: decision,
+        }
+      }
+
+      throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
+    }) as Parameters<typeof setRunCodexTurnForTesting>[0]
+  )
+
+  try {
+    markTicketReadyForVerify(ticket.id)
+
+    await runAutomaticTicketWorkflow({
+      ticketId: ticket.id,
+      startStepId: 'verify',
+    })
+
+    const updated = getTicket(ticket.id)
+    assert.match(verifyPrompt, /Use \$ticket-verify/)
+    assert.match(coordinatorPrompt, /Use \$ticket-coordinator/)
+    assert.match(verifyPrompt, /Expected 200 but got 500/)
+    assert.deepEqual(verifyAdditionalDirectories, [`${process.cwd()}/.codex/skills`])
+    assert.match(updated?.verificationRuns[0]?.diagnosis?.summary ?? '', /skill이 검증 실패를 구현 보완 이슈로 요약했습니다\./)
+    assert.equal(updated?.runState, 'needs_decision')
+  } finally {
+    resetRunCodexTurnForTesting()
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('runTicketWorkflow invokes analyze and stage review skills during analyze execution', async () => {
+  const ticket = createTicket({
+    title: 'Analyze skill invocation test',
+    description: 'analyze와 stage-review가 각각 ticket skill을 사용해야 한다.',
+    projectId: 'intentlane-codex',
+    projectPath: process.cwd(),
+    categoryId: 'feature',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+  })
+
+  let analyzePrompt = ''
+  let analyzeAdditionalDirectories: string[] | undefined
+  let stageReviewPrompt = ''
+  let stageReviewAdditionalDirectories: string[] | undefined
+
+  setRunCodexTurnForTesting(
+    (async (opts) => {
+      if (opts.promptFile === 'prompts/ticket-analyze.txt') {
+        analyzePrompt = opts.prompt
+        analyzeAdditionalDirectories = opts.additionalDirectories
+        const analysis = {
+          summary: '분석 결과',
+          affectedAreas: ['src/server/services/ticket-orchestrator.ts'],
+          risks: ['실제 검증 명령과 맞춰야 한다.'],
+          proposedChecks: ['pnpm typecheck'],
+        }
+        return {
+          threadId: 'thread-analyze',
+          finalResponse: JSON.stringify(analysis),
+          parsedOutput: analysis,
+        }
+      }
+
+      if (opts.promptFile === 'prompts/ticket-stage-review.txt') {
+        stageReviewPrompt = opts.prompt
+        stageReviewAdditionalDirectories = opts.additionalDirectories
+        const review = {
+          verdict: 'pass' as const,
+          summary: '분석 리뷰 통과',
+          blockingFindings: [],
+          residualRisks: [],
+        }
+        return {
+          threadId: 'thread-stage-review',
+          finalResponse: JSON.stringify(review),
+          parsedOutput: review,
+        }
+      }
+
+      throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
+    }) as Parameters<typeof setRunCodexTurnForTesting>[0]
+  )
+
+  try {
+    await runTicketWorkflow({
+      ticketId: ticket.id,
+      stepId: 'analyze',
+    })
+
+    assert.match(analyzePrompt, /Use \$ticket-analyze/)
+    assert.deepEqual(analyzeAdditionalDirectories, [`${process.cwd()}/.codex/skills`])
+    assert.match(stageReviewPrompt, /Use \$ticket-stage-review/)
+    assert.deepEqual(stageReviewAdditionalDirectories, [`${process.cwd()}/.codex/skills`])
+  } finally {
+    resetRunCodexTurnForTesting()
+    deleteTicket(ticket.id)
+  }
+})
+
+test('runTicketWorkflow passes a strict nullable scopedVerification schema to the plan step', async () => {
+  const ticket = createTicket({
+    title: 'Plan schema invocation test',
+    description: 'plan schema가 OpenAI strict structured output 요구사항을 만족해야 한다.',
+    projectId: 'intentlane-codex',
+    projectPath: process.cwd(),
+    categoryId: 'feature',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+  })
+
+  let capturedSchema: Record<string, unknown> | undefined
+  setRunCodexTurnForTesting(
+    (async (opts) => {
+      if (opts.promptFile === 'prompts/ticket-plan.txt') {
+        capturedSchema = opts.outputSchema
+        const planOutput = {
+          summary: '계획 요약',
+          changes: [
+            {
+              path: 'src/server/services/ticket-orchestrator.ts',
+              change: '계획 스키마를 정리한다.',
+              why: 'strict structured output와 맞춘다.',
+            },
+          ],
+          order: ['스키마를 수정한다.'],
+          acceptanceCriteria: ['plan 단계가 structured output 오류 없이 실행된다.'],
+          verificationPlan: ['pnpm typecheck'],
+          scopedVerification: {
+            rationale: 'ticket 범위를 빠르게 확인한다.',
+            commands: [
+              {
+                label: 'Typecheck',
+                command: 'pnpm typecheck',
+                timeoutMs: null,
+              },
+            ],
+          },
+        }
+        return {
+          threadId: 'thread-plan',
+          finalResponse: JSON.stringify(planOutput),
+          parsedOutput: planOutput,
+        }
+      }
+
+      if (opts.promptFile === 'prompts/ticket-stage-review.txt') {
+        const review = {
+          verdict: 'pass' as const,
+          summary: '계획 리뷰 통과',
+          blockingFindings: [],
+          residualRisks: [],
+        }
+        return {
+          threadId: 'thread-stage-review',
+          finalResponse: JSON.stringify(review),
+          parsedOutput: review,
+        }
+      }
+
+      throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
+    }) as Parameters<typeof setRunCodexTurnForTesting>[0]
+  )
+
+  try {
+    replaceStepOutput(
+      ticket.id,
+      'analyze',
+      ['## 분석 결과', '', '기존 분석', '', '### 영향 범위', '- 없음', '', '### 주요 리스크', '- 없음', '', '### 추천 검증', '- pnpm typecheck', ''].join('\n')
+    )
+    updateStepStatus(ticket.id, 'analyze', 'done')
+
+    await runTicketWorkflow({
+      ticketId: ticket.id,
+      stepId: 'plan',
+    })
+
+    const scopedVerificationSchema = (
+      (capturedSchema as { required?: string[]; properties?: { scopedVerification?: { type?: unknown; properties?: { commands?: { items?: { required?: string[]; properties?: { timeoutMs?: { type?: unknown } } } } } } } })?.properties
+        ?.scopedVerification
+    )
+    const scopedCommandSchema = (
+      (capturedSchema as { required?: string[]; properties?: { scopedVerification?: { type?: unknown; properties?: { commands?: { items?: { required?: string[]; properties?: { timeoutMs?: { type?: unknown } } } } } } } })?.properties
+        ?.scopedVerification?.properties?.commands?.items
+    )
+    const updated = getTicket(ticket.id)
+
+    assert.ok((capturedSchema as { required?: string[] })?.required?.includes('scopedVerification'))
+    assert.deepEqual(scopedVerificationSchema?.type, ['object', 'null'])
+    assert.deepEqual(scopedCommandSchema?.required, ['label', 'command', 'timeoutMs'])
+    assert.deepEqual(scopedCommandSchema?.properties?.timeoutMs?.type, ['integer', 'null'])
+    assert.equal(updated?.scopedVerification?.commands[0]?.timeoutMs, undefined)
+  } finally {
+    resetRunCodexTurnForTesting()
+    deleteTicket(ticket.id)
   }
 })
 
@@ -673,6 +982,8 @@ test('runTicketWorkflow retries plan with stage review feedback and verification
 
     assert.equal(planReviews.length, 2)
     assert.equal(planReviews.at(-1)?.verdict, 'pass')
+    assert.match(prompts[0] || '', /Use \$ticket-plan/)
+    assert.match(prompts[1] || '', /Use \$ticket-stage-review/)
     assert.match(prompts[0] || '', /pnpm typecheck/)
     assert.match(prompts[0] || '', /pnpm build/)
     assert.match(prompts[2] || '', /이전 계획 리뷰 피드백:/)
@@ -1197,6 +1508,7 @@ test('buildReviewPrompt and normalizeReviewOutput enforce request, ticket, and a
     )
 
     const prompt = buildReviewPrompt(ticket, undefined, 'Diff stat:\n src/server/services/ticket-orchestrator.ts | 12 ++++++')
+    assert.match(prompt, /Use \$ticket-review/)
     assert.match(prompt, /Request origin/)
     assert.match(prompt, /request 목표가 그대로 충족되어야 한다\./)
     assert.match(prompt, /Desired outcome:/)
@@ -2087,6 +2399,21 @@ test('runAutomaticTicketWorkflow stops same-run review repairs after implement m
         }
       }
 
+      if (opts.promptFile === 'prompts/ticket-coordinator.txt') {
+        const decision = {
+          kind: 'restart_implement' as const,
+          rationale: '승인된 계획을 유지한 채 같은 run 구현 수선을 계속 시도합니다.',
+          remediationNotes: '문서 산출물 중심으로 다시 구현하세요.',
+          confidence: 'high' as const,
+        }
+
+        return {
+          threadId: 'thread-coordinator',
+          finalResponse: JSON.stringify(decision),
+          parsedOutput: decision,
+        }
+      }
+
       throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
     }) as Parameters<typeof setRunCodexTurnForTesting>[0]
   )
@@ -2402,8 +2729,8 @@ test('runAutomaticTicketWorkflow exposes verify recovery choices as verify-origi
 
   setRunCodexTurnForTesting(
     (async (opts) => {
-      if (opts.promptFile !== 'prompts/ticket-coordinator.txt') {
-        throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
+      if (opts.promptFile === 'prompts/ticket-verify.txt') {
+        return maybeBuildCoordinatorStubResult(opts) as NonNullable<ReturnType<typeof maybeBuildCoordinatorStubResult>>
       }
 
       const decision = {
@@ -2516,8 +2843,8 @@ test('runAutomaticTicketWorkflow stops repeated verify fingerprints and asks for
   try {
     setRunCodexTurnForTesting(
       (async (opts) => {
-        if (opts.promptFile !== 'prompts/ticket-coordinator.txt') {
-          throw new Error(`Unexpected prompt file: ${opts.promptFile}`)
+        if (opts.promptFile === 'prompts/ticket-verify.txt') {
+          return maybeBuildCoordinatorStubResult(opts) as NonNullable<ReturnType<typeof maybeBuildCoordinatorStubResult>>
         }
 
         const decision = {
@@ -2546,7 +2873,11 @@ test('runAutomaticTicketWorkflow stops repeated verify fingerprints and asks for
     assert.ok(fingerprint)
 
     setRunCodexTurnForTesting(
-      (async () => {
+      (async (opts) => {
+        if (opts.promptFile === 'prompts/ticket-verify.txt') {
+          return maybeBuildCoordinatorStubResult(opts) as NonNullable<ReturnType<typeof maybeBuildCoordinatorStubResult>>
+        }
+
         throw new Error('Coordinator should not run when the verify fingerprint already repeated')
       }) as Parameters<typeof setRunCodexTurnForTesting>[0]
     )
@@ -2575,6 +2906,226 @@ test('runAutomaticTicketWorkflow stops repeated verify fingerprints and asks for
     assert.equal(updated?.verificationRuns.at(-1)?.diagnosis?.fingerprint, fingerprint)
     assert.match(updated?.planningBlock?.findings?.join('\n') ?? '', new RegExp(fingerprint))
     assert.equal(updated?.reviewRuns.length, 0)
+  } finally {
+    resetRunCodexTurnForTesting()
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('runAutomaticTicketWorkflow splits external blocker tickets when scoped verify passes first', async () => {
+  const fixture = createRepoFixture()
+  let blockerTicketId: string | undefined
+  const ticket = createTicket({
+    title: 'Scoped verify blocker split test',
+    description: '범위 검증은 통과했지만 전체 검증 회귀가 나면 blocker ticket으로 분리해야 한다.',
+    projectId: 'intentlane-codex',
+    projectPath: fixture.repoPath,
+    categoryId: 'feature',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+  })
+
+  writeFileSync(
+    join(fixture.repoPath, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'external-blocker-fixture',
+        private: true,
+        scripts: {
+          typecheck: "node -e \"console.error('workspace baseline regression'); process.exit(1)\"",
+          test: "node -e \"process.exit(0)\"",
+          build: "node -e \"process.exit(0)\"",
+        },
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  mkdirSync(join(fixture.repoPath, 'node_modules'), { recursive: true })
+
+  markTicketReadyForVerify(ticket.id)
+  setTicketScopedVerification(ticket.id, {
+    rationale: '티켓 범위 smoke 검증',
+    commands: [{ label: 'Scoped test', command: 'pnpm test' }],
+  })
+
+  try {
+    await runAutomaticTicketWorkflow({
+      ticketId: ticket.id,
+      startStepId: 'verify',
+    })
+
+    const updated = getTicket(ticket.id)
+    blockerTicketId = updated?.blockedByTicketId
+
+    assert.equal(updated?.runState, 'blocked')
+    assert.equal(updated?.status, 'blocked')
+    assert.equal(updated?.blockingReason, 'external_verify_blocker')
+    assert.equal(updated?.verificationRuns.length, 1)
+    assert.equal(updated?.verificationRuns[0]?.diagnosis?.kind, 'external_blocker')
+    assert.deepEqual(
+      updated?.verificationRuns[0]?.commands.map((command) => ({ stage: command.stage, status: command.status })),
+      [
+        { stage: 'scoped', status: 'passed' },
+        { stage: 'project', status: 'failed' },
+        { stage: 'project', status: 'skipped' },
+        { stage: 'project', status: 'skipped' },
+      ]
+    )
+
+    const blockerTicket = blockerTicketId ? getTicket(blockerTicketId) : undefined
+    assert.ok(blockerTicket)
+    assert.equal(blockerTicket?.originTicketId, ticket.id)
+    assert.equal(blockerTicket?.runState, 'queued')
+    assert.equal(blockerTicket?.queuedExecution?.startStepId, 'analyze')
+    assert.match(blockerTicket?.description ?? '', /전체 검증 회귀/)
+  } finally {
+    if (blockerTicketId) {
+      deleteTicket(blockerTicketId)
+    }
+    deleteTicket(ticket.id)
+    fixture.cleanup()
+  }
+})
+
+test('completed blocker ticket requeues the origin ticket from verify', () => {
+  const fixture = createRepoFixture()
+  const originTicket = createTicket({
+    title: 'Origin ticket resume test',
+    description: 'blocker 완료 후 원본 ticket이 verify부터 다시 실행되어야 한다.',
+    projectId: 'intentlane-codex',
+    projectPath: fixture.repoPath,
+    categoryId: 'feature',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+  })
+  const blockerTicket = createTicket({
+    title: 'Blocker ticket resume test',
+    description: '전체 검증 회귀 해결용 blocker ticket',
+    projectId: 'intentlane-codex',
+    projectPath: fixture.repoPath,
+    categoryId: 'bugfix',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+    originTicketId: originTicket.id,
+  })
+
+  try {
+    setTicketBlockerLink(originTicket.id, blockerTicket.id, 'external_verify_blocker')
+    setTicketStatus(originTicket.id, 'blocked')
+
+    setTicketStatus(blockerTicket.id, 'completed')
+
+    const resumedOrigin = getTicket(originTicket.id)
+    assert.equal(resumedOrigin?.blockedByTicketId, undefined)
+    assert.equal(resumedOrigin?.blockingReason, undefined)
+    assert.equal(resumedOrigin?.runState, 'queued')
+    assert.equal(resumedOrigin?.status, 'queued')
+    assert.equal(resumedOrigin?.currentPhase, 'verify')
+    assert.equal(resumedOrigin?.queuedExecution?.startStepId, 'verify')
+    assert.match(resumedOrigin?.queuedExecution?.recoveryNotes ?? '', new RegExp(blockerTicket.id))
+  } finally {
+    deleteTicket(blockerTicket.id)
+    deleteTicket(originTicket.id)
+    fixture.cleanup()
+  }
+})
+
+test('runAutomaticTicketWorkflow still collects JUnit failures that appear after the 48th report file', async () => {
+  const fixture = createRepoFixture()
+  const reportsDir = join(fixture.repoPath, 'build', 'test-results', 'test')
+  const ticket = createTicket({
+    title: 'JUnit report scan coverage test',
+    description: '뒤쪽 XML에만 있는 실패도 verify 진단에서 잡아야 한다.',
+    projectId: 'intentlane-codex',
+    projectPath: fixture.repoPath,
+    categoryId: 'feature',
+    flowStepIds: ['analyze', 'plan', 'implement', 'verify', 'review', 'ready'],
+  })
+
+  writeFileSync(
+    join(fixture.repoPath, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'junit-scan-fixture',
+        private: true,
+        scripts: {
+          typecheck: "node -e \"console.error('acceptance criteria mismatch'); process.exit(1)\"",
+          test: "node -e \"process.exit(0)\"",
+          build: "node -e \"process.exit(0)\"",
+        },
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  mkdirSync(join(fixture.repoPath, 'node_modules'), { recursive: true })
+  mkdirSync(reportsDir, { recursive: true })
+
+  for (let index = 1; index <= 54; index += 1) {
+    writeFileSync(
+      join(reportsDir, `TEST-${String(index).padStart(3, '0')}.xml`),
+      `<?xml version="1.0" encoding="UTF-8"?><testsuite name="PassingSuite${index}" tests="1" failures="0"><testcase classname="PassingSuite${index}" name="passes"/></testsuite>`,
+      'utf8'
+    )
+  }
+
+  writeFileSync(
+    join(reportsDir, 'TEST-055.xml'),
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<testsuite name="LaterFailingSuite" tests="1" failures="1">',
+      '  <testcase classname="LaterFailingSuite" name="lateFailure">',
+      '    <failure message="Status expected:&lt;200&gt; but was:&lt;403&gt; path=/api/v1/user-server/admin/users">{&quot;code&quot;:&quot;TERM_ACCESS_BLOCKED&quot;}</failure>',
+      '  </testcase>',
+      '</testsuite>',
+    ].join('\n'),
+    'utf8'
+  )
+
+  markTicketReadyForVerify(ticket.id)
+  setRunCodexTurnForTesting(
+    (async (opts) => {
+      if (opts.promptFile === 'prompts/ticket-verify.txt') {
+        const diagnosis = {
+          summary: '403 상태와 TERM_ACCESS_BLOCKED 코드가 반복되어 구현 보완이 필요합니다.',
+          recommendedRecovery: 'new_run_implement' as const,
+        }
+
+        return {
+          threadId: 'thread-test',
+          finalResponse: JSON.stringify(diagnosis),
+          parsedOutput: diagnosis,
+        }
+      }
+
+      const decision = {
+        kind: 'needs_decision' as const,
+        rationale: '회귀 원인을 확인한 뒤 다음 경로를 결정해야 합니다.',
+        remediationNotes: 'JUnit 회귀를 검토하세요.',
+        confidence: 'high' as const,
+      }
+
+      return {
+        threadId: 'thread-test',
+        finalResponse: JSON.stringify(decision),
+        parsedOutput: decision,
+      }
+    }) as Parameters<typeof setRunCodexTurnForTesting>[0]
+  )
+
+  try {
+    await runAutomaticTicketWorkflow({
+      ticketId: ticket.id,
+      startStepId: 'verify',
+    })
+
+    const updated = getTicket(ticket.id)
+    assert.equal(updated?.runState, 'needs_decision')
+    assert.equal(updated?.verificationRuns[0]?.diagnosis?.kind, 'test_regression')
+    assert.equal(updated?.verificationRuns[0]?.diagnosis?.failingTests.some((testCase) => testCase.suite === 'LaterFailingSuite'), true)
+    assert.match(updated?.verificationRuns[0]?.diagnosis?.summary ?? '', /403/)
+    assert.match(updated?.verificationRuns[0]?.diagnosis?.summary ?? '', /TERM_ACCESS_BLOCKED/)
   } finally {
     resetRunCodexTurnForTesting()
     deleteTicket(ticket.id)

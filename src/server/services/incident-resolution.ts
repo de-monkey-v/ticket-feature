@@ -8,6 +8,7 @@ import {
   type IncidentResolutionActionType,
   type IncidentTrigger,
 } from './incidents.js'
+import { applyTicketRetryPlan, enqueueTicketExecution } from './tickets.js'
 
 type ResolutionStepId = 'analyze' | 'plan' | 'implement'
 
@@ -38,7 +39,7 @@ function stepLabel(stepId: ResolutionStepId) {
 function buildFallbackIntent(incident: Incident): IncidentResolutionIntent {
   if (incident.analysis?.recommendedAction.type === 'rerun_from_step') {
     return {
-      type: 'needs_decision',
+      type: 'retry_ticket',
       startStepId: incident.analysis.recommendedAction.startStepId ?? null,
       rationale: incident.analysis.recommendedAction.rationale,
     }
@@ -112,7 +113,7 @@ function normalizeResolutionIntent(incident: Incident): IncidentResolutionIntent
 
   if (baseIntent.type === 'retry_ticket') {
     return {
-      type: 'needs_decision',
+      type: 'retry_ticket',
       startStepId: resolveStartStepId(incident, baseIntent.startStepId),
       rationale: baseIntent.rationale,
     }
@@ -125,6 +126,14 @@ function normalizeResolutionIntent(incident: Incident): IncidentResolutionIntent
 }
 
 function buildResolutionMessage(intent: IncidentResolutionIntent) {
+  if (intent.type === 'retry_ticket') {
+    if (intent.startStepId) {
+      return `${stepLabel(intent.startStepId)} 단계부터 자동 재시도를 시작했습니다.`
+    }
+
+    return '자동 재시도를 시작했습니다.'
+  }
+
   if (intent.type === 'needs_request_clarification') {
     if (intent.startStepId) {
       return `ticket 상태는 바꾸지 않았습니다. 요구사항 보완 후 ${stepLabel(intent.startStepId)} 단계 재시작 여부를 검토하세요.`
@@ -133,7 +142,7 @@ function buildResolutionMessage(intent: IncidentResolutionIntent) {
     return 'ticket 상태는 바꾸지 않았습니다. 요구사항 보완이 먼저 필요합니다.'
   }
 
-  if (intent.type === 'needs_decision' || intent.type === 'retry_ticket') {
+  if (intent.type === 'needs_decision') {
     if (intent.startStepId) {
       return `자동 재시도는 수행하지 않았습니다. ${stepLabel(intent.startStepId)} 단계 재시작 여부를 사람이 결정해야 합니다.`
     }
@@ -142,6 +151,30 @@ function buildResolutionMessage(intent: IncidentResolutionIntent) {
   }
 
   return '자동 재시도 없이 분석 결과만 기록했습니다. ticket 상태는 바꾸지 않았습니다.'
+}
+
+function restartTicketFromIncident(incident: Incident, intent: IncidentResolutionIntent) {
+  const startStepId = resolveStartStepId(incident, intent.startStepId)
+  const shouldCleanupWorktree = Boolean(
+    incident.bundle.worktree && incident.bundle.worktree.status !== 'merged' && incident.bundle.worktree.status !== 'discarded'
+  )
+  const reset = applyTicketRetryPlan(incident.sourceId, {
+    id: `incident-retry-${startStepId}`,
+    label: `incident 자동 복구: ${startStepId}부터 새 run 시작`,
+    startStepId,
+    executionMode: 'new_run',
+    sessionMode: 'new_thread',
+    shouldCleanupWorktree,
+  })
+
+  if (!reset) {
+    throw new Error('Ticket retry plan could not be applied for the incident resolution')
+  }
+
+  const queued = enqueueTicketExecution(incident.sourceId, reset.startStepId, intent.rationale)
+  if (!queued) {
+    throw new Error('Ticket could not be queued after incident retry reset')
+  }
 }
 
 function completeIncidentResolution(incident: Incident, intent: IncidentResolutionIntent) {
@@ -179,6 +212,9 @@ async function runIncidentAutoResolution(incidentId: string) {
     }
 
     const intent = normalizeResolutionIntent(latestIncident)
+    if (intent.type === 'retry_ticket') {
+      restartTicketFromIncident(latestIncident, intent)
+    }
     completeIncidentResolution(latestIncident, intent)
     return getIncident(incidentId)
   } catch (error) {

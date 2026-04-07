@@ -97,6 +97,7 @@ function mergeIssueLabel(issue: TicketMergeIssueKind) {
   if (issue === 'base_branch_changed') return '기준 브랜치 변경'
   if (issue === 'base_commit_changed') return '기준 커밋 전진'
   if (issue === 'head_changed_after_review') return 'review 이후 HEAD 변경'
+  if (issue === 'target_worktree_dirty') return '대상 브랜치 로컬 변경'
   if (issue === 'rebase_conflict_text') return '문서/텍스트 rebase 충돌'
   if (issue === 'rebase_conflict_code') return '코드 rebase 충돌'
   if (issue === 'rebase_failed') return 'rebase 실패'
@@ -115,6 +116,10 @@ function mergeResolutionDescription(action: TicketMergeResolutionAction) {
 
   if (action === 'reapply_on_latest_base') {
     return '최신 main 기준 새 run에서 기존 reviewed 변경 의도만 다시 적용한 뒤 verify/review를 다시 진행합니다.'
+  }
+
+  if (action === 'preserve_target_changes_and_reconcile') {
+    return 'merge 대상 브랜치의 로컬 변경을 safety branch에 보존한 뒤, 새 run에서 reviewed 결과와 다시 통합합니다.'
   }
 
   if (action === 'restart_from_plan') {

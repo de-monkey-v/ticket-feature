@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { loadConfig } from '../lib/config.js'
 import { getModelCapability, resolveReasoningEffortForModel } from '../lib/model-capabilities.js'
 import { runCodexTurn } from './codex-sdk.js'
@@ -90,6 +92,8 @@ const VERIFICATION_OUTPUT_LIMIT = 1_500
 const REVIEW_OUTPUT_LIMIT = 1_200
 const TIMELINE_BODY_LIMIT = 500
 const DIFF_SUMMARY_LIMIT = 2_000
+const PROJECT_SKILLS_DIR = resolve(process.cwd(), '.codex/skills')
+const TICKET_INCIDENT_ANALYZE_SKILL = 'ticket-incident-analyze'
 
 function makeExcerpt(text: string | undefined, limit: number) {
   if (!text) {
@@ -101,6 +105,18 @@ function makeExcerpt(text: string | undefined, limit: number) {
   }
 
   return `${text.slice(0, limit)}\n...[truncated ${text.length - limit} chars]`
+}
+
+function getProjectSkillDirectories() {
+  if (!existsSync(PROJECT_SKILLS_DIR)) {
+    return undefined
+  }
+
+  return [PROJECT_SKILLS_DIR]
+}
+
+function buildSkillInvocation(skillName: string) {
+  return `Use $${skillName} at ${resolve(PROJECT_SKILLS_DIR, skillName)} for this ticket step.`
 }
 
 export function setRunCodexTurnForIncidentAnalysisTesting(fn: typeof runCodexTurn) {
@@ -187,6 +203,8 @@ export function buildIncidentAnalysisEvidence(incident: Incident) {
 
 function buildIncidentAnalysisPrompt(incident: Incident) {
   return [
+    buildSkillInvocation(TICKET_INCIDENT_ANALYZE_SKILL),
+    '',
     `Incident ID: ${incident.id}`,
     `Project ID: ${incident.projectId}`,
     `Ticket ID: ${incident.sourceId}`,
@@ -231,6 +249,7 @@ export async function analyzeIncident(incidentId: string): Promise<Incident> {
       prompt: buildIncidentAnalysisPrompt(incident),
       promptFile: 'prompts/ticket-incident-analyze.txt',
       cwd: project.path,
+      additionalDirectories: getProjectSkillDirectories(),
       model,
       reasoningEffort,
       serviceTier: config.flows.explain.serviceTier,

@@ -11,10 +11,13 @@ import {
   appendVerificationRun,
   clearTicketRepairLoop,
   clearTicketWorktree,
+  createTicket,
   createDefaultGoalAssessment,
+  enqueueTicketExecution,
   getTicket,
   replaceStepOutput,
   setFinalReport,
+  setTicketBlockerLink,
   setTicketMergeBlock,
   setTicketMergeContext,
   setTicketAttemptCount,
@@ -23,6 +26,7 @@ import {
   setTicketImplementationThreadId,
   setTicketPlanningBlock,
   setTicketPlanningThreadId,
+  setTicketScopedVerification,
   setTicketRunState,
   setTicketStatus,
   setTicketWorktree,
@@ -45,12 +49,13 @@ import {
   type TicketRepairLoop,
   type TicketWorktree,
   type AcceptanceCriterionAssessment,
+  type ScopedVerificationPlan,
   type VerificationCommandResult,
   type VerificationDiagnosis,
   type VerificationFailureTestCase,
   type VerificationRun,
 } from './tickets.js'
-import { loadConfig, type ProjectConfig, type StepConfig } from '../lib/config.js'
+import { loadConfig, type ProjectConfig, type ReasoningEffort, type StepConfig } from '../lib/config.js'
 import { resolveReasoningEffortForModel } from '../lib/model-capabilities.js'
 import {
   listProjectAncestorsWithinRepository,
@@ -68,6 +73,15 @@ const DEFAULT_STEP_MAX_ATTEMPTS = 1
 const TICKET_REASONING_EFFORT = 'xhigh'
 const MAX_TICKET_WORKFLOW_RUNS = 3
 const MERGE_DECISION_PROMPT_FILE = 'prompts/ticket-merge-decision.txt'
+const VERIFY_SKILL_PROMPT_FILE = 'prompts/ticket-verify.txt'
+const PROJECT_SKILLS_DIR = resolve(process.cwd(), '.codex/skills')
+const TICKET_ANALYZE_SKILL = 'ticket-analyze'
+const TICKET_PLAN_SKILL = 'ticket-plan'
+const TICKET_IMPLEMENT_SKILL = 'ticket-implement'
+const TICKET_VERIFY_SKILL = 'ticket-verify'
+const TICKET_REVIEW_SKILL = 'ticket-review'
+const TICKET_STAGE_REVIEW_SKILL = 'ticket-stage-review'
+const TICKET_MERGE_DECISION_SKILL = 'ticket-merge-decision'
 const TEXT_CONFLICT_FILE_EXTENSIONS = new Set(['.adoc', '.json', '.md', '.rst', '.txt', '.yaml', '.yml'])
 let runCodexTurnImpl: typeof runCodexTurn = runCodexTurn
 let ticketSelfHealingEnabled = true
@@ -92,8 +106,8 @@ function getTicketModel(stepConfig: StepConfig) {
   return stepConfig.model ?? loadConfig().flows.explain.model
 }
 
-function getTicketReasoningEffort(stepConfig: StepConfig) {
-  return resolveReasoningEffortForModel(getTicketModel(stepConfig), stepConfig.reasoningEffort ?? TICKET_REASONING_EFFORT)
+function getTicketReasoningEffort(stepConfig: StepConfig, fallbackReasoningEffort: ReasoningEffort = TICKET_REASONING_EFFORT) {
+  return resolveReasoningEffortForModel(getTicketModel(stepConfig), stepConfig.reasoningEffort ?? fallbackReasoningEffort)
 }
 
 function getPlanningThreadId(ticket: Ticket) {
@@ -124,6 +138,7 @@ async function runRestartableTicketTurn<T>(params: {
   prompt: string
   promptFile: string
   cwd: string
+  additionalDirectories?: string[]
   threadId?: string
   stepLabel: string
   signal?: AbortSignal
@@ -139,6 +154,7 @@ async function runRestartableTicketTurn<T>(params: {
     },
     promptFile: params.promptFile,
     cwd: params.cwd,
+    additionalDirectories: params.additionalDirectories,
     threadId: params.threadId,
     model: getTicketModel(params.stepConfig),
     reasoningEffort: getTicketReasoningEffort(params.stepConfig),
@@ -184,6 +200,7 @@ interface PlanOutput {
   order: string[]
   acceptanceCriteria: string[]
   verificationPlan: string[]
+  scopedVerification?: ScopedVerificationPlan
 }
 
 interface ReviewOutput {
@@ -193,6 +210,11 @@ interface ReviewOutput {
   blockingFindings: string[]
   residualRisks: string[]
   releaseNotes: string[]
+}
+
+interface VerifySkillOutput {
+  summary: string
+  recommendedRecovery: VerificationDiagnosis['recommendedRecovery']
 }
 
 interface StageReviewOutput {
@@ -331,7 +353,7 @@ const analyzeSchema = {
 const planSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['summary', 'changes', 'order', 'acceptanceCriteria', 'verificationPlan'],
+  required: ['summary', 'changes', 'order', 'acceptanceCriteria', 'verificationPlan', 'scopedVerification'],
   properties: {
     summary: { type: 'string' },
     changes: {
@@ -358,6 +380,27 @@ const planSchema = {
     verificationPlan: {
       type: 'array',
       items: { type: 'string' },
+    },
+    scopedVerification: {
+      type: ['object', 'null'],
+      additionalProperties: false,
+      required: ['rationale', 'commands'],
+      properties: {
+        rationale: { type: 'string' },
+        commands: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['label', 'command', 'timeoutMs'],
+            properties: {
+              label: { type: 'string' },
+              command: { type: 'string' },
+              timeoutMs: { type: ['integer', 'null'], minimum: 1 },
+            },
+          },
+        },
+      },
     },
   },
 } as const
@@ -443,6 +486,19 @@ const reviewSchema = {
   },
 } as const
 
+const verifySkillSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary', 'recommendedRecovery'],
+  properties: {
+    summary: { type: 'string' },
+    recommendedRecovery: {
+      type: 'string',
+      enum: ['new_run_implement', 'new_run_plan', 'needs_decision'],
+    },
+  },
+} as const
+
 const stageReviewSchema = {
   type: 'object',
   additionalProperties: false,
@@ -480,6 +536,7 @@ const mergeDecisionSchema = {
         'rebase_and_revalidate',
         'revalidate_current_worktree',
         'reapply_on_latest_base',
+        'preserve_target_changes_and_reconcile',
         'restart_from_plan',
         'discard_worktree',
       ],
@@ -497,6 +554,7 @@ const mergeDecisionSchema = {
               'rebase_and_revalidate',
               'revalidate_current_worktree',
               'reapply_on_latest_base',
+              'preserve_target_changes_and_reconcile',
               'restart_from_plan',
               'discard_worktree',
             ],
@@ -568,6 +626,37 @@ function formatVerificationCommandCatalog(project: ProjectConfig) {
         `- ${command.label}: \`${command.command}\`${command.required === false ? ' (optional)' : ' (required)'}`
     )
     .join('\n')
+}
+
+function getProjectSkillPath(skillName: string) {
+  return resolve(PROJECT_SKILLS_DIR, skillName)
+}
+
+function buildSkillInvocation(skillName: string) {
+  return `Use $${skillName} at ${getProjectSkillPath(skillName)} for this ticket step.`
+}
+
+function getProjectSkillDirectories() {
+  if (!existsSync(PROJECT_SKILLS_DIR)) {
+    return undefined
+  }
+
+  return [PROJECT_SKILLS_DIR]
+}
+
+function getTicketSkillDirectories(stepId: string) {
+  if (
+    stepId === 'analyze' ||
+    stepId === 'plan' ||
+    stepId === 'implement' ||
+    stepId === 'verify' ||
+    stepId === 'review' ||
+    stepId === 'stage_review'
+  ) {
+    return getProjectSkillDirectories()
+  }
+
+  return undefined
 }
 
 function formatEvidenceInline(evidence: string[]) {
@@ -724,6 +813,8 @@ function buildTicketContext(ticket: Ticket) {
 
 function buildAnalyzePrompt(ticket: Ticket, project: ProjectConfig, remediationNotes?: string) {
   const lines = [
+    buildSkillInvocation(TICKET_ANALYZE_SKILL),
+    '',
     buildTicketContext(ticket),
     '예정된 자동 검증 명령:',
     formatVerificationCommandCatalog(project),
@@ -741,6 +832,8 @@ function buildAnalyzePrompt(ticket: Ticket, project: ProjectConfig, remediationN
 
 function buildPlanPrompt(ticket: Ticket, project: ProjectConfig, remediationNotes?: string) {
   const lines = [
+    buildSkillInvocation(TICKET_PLAN_SKILL),
+    '',
     buildTicketContext(ticket),
     `분석 결과:\n${ticket.steps.analyze?.output || '분석 결과 없음'}`,
     '',
@@ -749,6 +842,7 @@ function buildPlanPrompt(ticket: Ticket, project: ProjectConfig, remediationNote
     '',
     '분석 결과를 바탕으로 구현 계획을 세워줘.',
     '검증 계획은 실제 자동 검증 명령과 모순되지 않게 작성해줘.',
+    '가능하면 이번 ticket 범위를 빠르게 확인할 수 있는 범위 검증 명령(scoped verification)도 함께 제안해줘.',
   ]
 
   if (remediationNotes) {
@@ -756,6 +850,96 @@ function buildPlanPrompt(ticket: Ticket, project: ProjectConfig, remediationNote
   }
 
   return lines.join('\n')
+}
+
+function inferScopedVerificationPrefixes(project: ProjectConfig) {
+  const prefixes = new Set<string>()
+
+  for (const command of project.verificationCommands) {
+    const trimmed = command.command.trim()
+    if (!trimmed) {
+      continue
+    }
+
+    if (/^sh\s+\.\/gradlew\b/.test(trimmed)) {
+      prefixes.add('sh ./gradlew')
+      continue
+    }
+
+    if (/^\.\/gradlew\b/.test(trimmed)) {
+      prefixes.add('./gradlew')
+      continue
+    }
+
+    if (/^gradle\b/.test(trimmed)) {
+      prefixes.add('gradle')
+      continue
+    }
+
+    if (/^pnpm\b/.test(trimmed)) {
+      prefixes.add('pnpm')
+      continue
+    }
+
+    if (/^npm\b/.test(trimmed)) {
+      prefixes.add('npm')
+      continue
+    }
+
+    if (/^yarn\b/.test(trimmed)) {
+      prefixes.add('yarn')
+    }
+  }
+
+  return [...prefixes]
+}
+
+function hasUnsafeShellSyntax(command: string) {
+  return /(?:&&|\|\||;|\||>|<|`|\$\()/.test(command)
+}
+
+function normalizeScopedVerificationPlan(plan: ScopedVerificationPlan | undefined, project: ProjectConfig) {
+  if (!plan?.commands?.length) {
+    return undefined
+  }
+
+  const allowedPrefixes = inferScopedVerificationPrefixes(project)
+  if (allowedPrefixes.length === 0) {
+    return undefined
+  }
+
+  const commands = plan.commands.flatMap((entry) => {
+    const label = entry.label.trim()
+    const command = entry.command.trim()
+    if (!label || !command || hasUnsafeShellSyntax(command)) {
+      return []
+    }
+
+    if (!allowedPrefixes.some((prefix) => command === prefix || command.startsWith(`${prefix} `))) {
+      return []
+    }
+
+    return [
+      {
+        label,
+        command,
+        timeoutMs: typeof entry.timeoutMs === 'number' ? entry.timeoutMs : undefined,
+      },
+    ]
+  })
+
+  if (commands.length === 0) {
+    return undefined
+  }
+
+  return {
+    rationale: plan.rationale.trim(),
+    commands,
+  } satisfies ScopedVerificationPlan
+}
+
+function getScopedVerificationPlan(ticket: Ticket, project: ProjectConfig) {
+  return normalizeScopedVerificationPlan(ticket.scopedVerification, project)
 }
 
 function buildStageReviewFeedback(label: string, review: StageReview) {
@@ -808,6 +992,21 @@ function buildRecoveryRetryOptions(ticket: Ticket, source: TicketPlanningBlock['
   ]
 }
 
+function buildSelfHealUnavailablePlanningBlock(
+  ticket: Ticket,
+  source: 'verify' | 'review',
+  summary: string,
+  findings: string[]
+): TicketPlanningBlock {
+  return {
+    kind: 'needs_decision',
+    source,
+    summary,
+    findings,
+    options: buildRecoveryRetryOptions(ticket, source),
+  }
+}
+
 function buildCoordinatorPlanningBlock(
   ticket: Ticket,
   source: TicketPlanningBlock['source'],
@@ -857,6 +1056,8 @@ export function buildReviewPrompt(ticket: Ticket, verificationRun: VerificationR
   const verificationSummary = verificationRun ? formatVerificationRun(verificationRun) : '검증 단계가 없는 카테고리입니다.'
 
   return [
+    buildSkillInvocation(TICKET_REVIEW_SKILL),
+    '',
     `Ticket: ${ticket.title}`,
     '',
     `Ticket description:\n${ticket.description}`,
@@ -893,6 +1094,10 @@ function describeMergeResolutionAction(action: TicketMergeResolutionAction) {
     return '현재 reviewed 결과의 의도를 최신 기준 브랜치에서 새 run으로 다시 적용한 뒤 verify/review/ready까지 자동 진행한다.'
   }
 
+  if (action === 'preserve_target_changes_and_reconcile') {
+    return 'merge 대상 브랜치의 로컬 변경을 safety branch에 보존한 뒤, review를 통과한 ticket 결과와 새 run에서 다시 통합한다.'
+  }
+
   if (action === 'restart_from_plan') {
     return '현재 worktree를 정리하고 현재 기준 브랜치에서 새 run으로 plan부터 다시 시작한다.'
   }
@@ -907,6 +1112,8 @@ function buildMergeDecisionPrompt(
   allowedActions: TicketMergeResolutionAction[]
 ) {
   return [
+    buildSkillInvocation(TICKET_MERGE_DECISION_SKILL),
+    '',
     `Ticket: ${ticket.title}`,
     '',
     `Ticket description:\n${ticket.description}`,
@@ -939,6 +1146,10 @@ function formatMergeResolutionLabel(action: TicketMergeResolutionAction) {
 
   if (action === 'reapply_on_latest_base') {
     return '최신 기준 브랜치에서 변경 재적용'
+  }
+
+  if (action === 'preserve_target_changes_and_reconcile') {
+    return '대상 로컬 변경 보존 후 reconcile'
   }
 
   if (action === 'restart_from_plan') {
@@ -1059,6 +1270,15 @@ function formatPlanOutput(output: PlanOutput): string {
     '### 완료 기준',
     formatList(output.acceptanceCriteria),
     '',
+    ...(output.scopedVerification?.commands?.length
+      ? [
+          '### 범위 검증',
+          output.scopedVerification.rationale,
+          '',
+          ...output.scopedVerification.commands.map((command) => `- ${command.label}: \`${command.command}\``),
+          '',
+        ]
+      : []),
     '### 검증 계획',
     formatList(output.verificationPlan),
     '',
@@ -1078,6 +1298,7 @@ function formatVerificationRun(run: VerificationRun): string {
       const lines = [
         `### ${command.label} [${formatVerificationCommandStatus(command.status)}]`,
         '',
+        `- 단계: ${command.stage === 'scoped' ? '범위 검증' : '프로젝트 검증'}`,
         `- 명령어: \`${command.command}\``,
       ]
 
@@ -1202,12 +1423,12 @@ function extractFailurePath(value: string) {
   return directPath?.trim()
 }
 
-function collectVerificationReportFiles(rootDir: string, maxFiles = 48) {
+function collectVerificationReportFiles(rootDir: string) {
   const files: string[] = []
   const queue: Array<{ path: string; depth: number }> = [{ path: rootDir, depth: 0 }]
   const skipDirectories = new Set(['.git', 'node_modules', '.pnpm', '.yarn', '.next', '.turbo'])
 
-  while (queue.length > 0 && files.length < maxFiles) {
+  while (queue.length > 0) {
     const current = queue.shift()
     if (!current) {
       break
@@ -1221,10 +1442,6 @@ function collectVerificationReportFiles(rootDir: string, maxFiles = 48) {
     }
 
     for (const entry of entries) {
-      if (files.length >= maxFiles) {
-        break
-      }
-
       const entryPath = resolve(current.path, entry.name)
       if (entry.isDirectory()) {
         if (current.depth >= 6 || skipDirectories.has(entry.name)) {
@@ -1312,6 +1529,43 @@ function collectSuspectedAreas(texts: string[]) {
   return [...matches]
 }
 
+function collectCommonFailureSignals(failingTests: VerificationFailureTestCase[], combinedOutput: string) {
+  const statusCounts = new Map<string, number>()
+  const codeCounts = new Map<string, number>()
+  const statusPattern = /Status expected:<\d+> but was:<(\d+)>|Status = (\d+)/g
+  const codePattern = /"code"\s*:\s*"([A-Z0-9_]+)"/g
+
+  for (const test of failingTests) {
+    let statusMatch: RegExpExecArray | null
+    while ((statusMatch = statusPattern.exec(test.message))) {
+      const status = statusMatch[1] ?? statusMatch[2]
+      if (status) {
+        statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1)
+      }
+    }
+
+    let codeMatch: RegExpExecArray | null
+    while ((codeMatch = codePattern.exec(test.message))) {
+      const code = codeMatch[1]
+      if (code) {
+        codeCounts.set(code, (codeCounts.get(code) ?? 0) + 1)
+      }
+    }
+  }
+
+  for (const match of combinedOutput.match(/Status: (\d+)/g) ?? []) {
+    const status = /Status: (\d+)/.exec(match)?.[1]
+    if (status) {
+      statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1)
+    }
+  }
+
+  return {
+    topStatus: [...statusCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0],
+    topCode: [...codeCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0],
+  }
+}
+
 function summarizeVerificationDiagnosis(diagnosis: VerificationDiagnosis) {
   if (diagnosis.failingTests.length === 0) {
     return diagnosis.summary
@@ -1332,6 +1586,10 @@ function formatVerificationDiagnosisKind(kind: VerificationDiagnosis['kind']) {
 
   if (kind === 'test_regression') {
     return 'test_regression'
+  }
+
+  if (kind === 'external_blocker') {
+    return 'external_blocker'
   }
 
   if (kind === 'plan_misalignment') {
@@ -1450,6 +1708,12 @@ function buildLatestVerificationContext(ticket: Ticket) {
   )
 }
 
+function isExternalVerificationBlockerRun(run: VerificationRun) {
+  const scopedCommands = run.commands.filter((command) => command.stage === 'scoped')
+  const projectFailed = run.commands.some((command) => command.stage === 'project' && command.status === 'failed')
+  return scopedCommands.length > 0 && scopedCommands.every((command) => command.status === 'passed') && projectFailed
+}
+
 function diagnoseVerificationRun(run: VerificationRun, cwd: string): VerificationDiagnosis | undefined {
   if (run.status !== 'failed') {
     return undefined
@@ -1467,18 +1731,29 @@ function diagnoseVerificationRun(run: VerificationRun, cwd: string): Verificatio
   let kind: VerificationDiagnosis['kind'] = 'unknown'
   let recommendedRecovery: VerificationDiagnosis['recommendedRecovery'] = 'new_run_implement'
   let summary = '검증 실패 원인을 추가 확인해야 합니다.'
+  const commonSignals = collectCommonFailureSignals(failingTests, combinedOutput)
 
   if (classification.kind === 'verification_environment_failed') {
     kind = 'environment'
     recommendedRecovery = 'needs_decision'
     summary = classification.signals.length > 0 ? classification.signals.join(' ') : classification.rationale
+  } else if (isExternalVerificationBlockerRun(run)) {
+    kind = 'external_blocker'
+    recommendedRecovery = 'needs_decision'
+    summary = `범위 검증은 통과했지만 프로젝트 전체 검증에서 ${
+      failingTests.length > 0 ? `${failingTests.length}개` : '추가'
+    } 회귀가 발견되었습니다.${commonSignals.topStatus ? ` 공통 상태=${commonSignals.topStatus}` : ''}${
+      commonSignals.topCode ? `, 코드=${commonSignals.topCode}` : ''
+    }`
+  } else if (failingTests.length > 0) {
+    kind = 'test_regression'
+    summary = `${failingTests.length}개 테스트가 실패했습니다.${commonSignals.topStatus ? ` 공통 상태=${commonSignals.topStatus}` : ''}${
+      commonSignals.topCode ? `, 코드=${commonSignals.topCode}` : ''
+    }`
   } else if (/acceptance|criterion|criteria|scope|요구사항|완료 기준|계획/i.test(combinedOutput)) {
     kind = 'plan_misalignment'
     recommendedRecovery = 'new_run_plan'
     summary = '검증 실패가 구현 세부보다 계획 또는 완료 기준 정렬 문제에 가깝습니다.'
-  } else if (failingTests.length > 0) {
-    kind = 'test_regression'
-    summary = `${failingTests.length}개 테스트가 실패했습니다.`
   } else if (failedCommands.length > 0) {
     summary = `${failedCommands.length}개 검증 명령이 실패했습니다.`
   }
@@ -1515,6 +1790,62 @@ function diagnoseVerificationRun(run: VerificationRun, cwd: string): Verificatio
     })),
     suspectedAreas,
     recommendedRecovery,
+  }
+}
+
+function normalizeVerifySkillRecovery(
+  value: string | undefined
+): VerificationDiagnosis['recommendedRecovery'] | undefined {
+  if (value === 'new_run_implement' || value === 'new_run_plan' || value === 'needs_decision') {
+    return value
+  }
+
+  return undefined
+}
+
+async function maybeDiagnoseVerificationWithSkill(
+  ticket: Ticket,
+  project: ProjectConfig,
+  verificationRun: VerificationRun,
+  diagnosis: VerificationDiagnosis,
+  signal?: AbortSignal
+) {
+  try {
+    const verifyStep = getStepConfig('verify')
+    const result = await runCodexTurnImpl<VerifySkillOutput>({
+      prompt: buildVerifyPrompt(ticket, project, verificationRun),
+      promptFile: verifyStep.promptFile ?? VERIFY_SKILL_PROMPT_FILE,
+      cwd: getExecutionCwd(ticket),
+      additionalDirectories: getTicketSkillDirectories('verify'),
+      model: getTicketModel(verifyStep),
+      reasoningEffort: getTicketReasoningEffort(verifyStep, 'medium'),
+      serviceTier: loadConfig().flows.explain.serviceTier,
+      sandboxMode: verifyStep.sandboxMode ?? 'read-only',
+      approvalPolicy: verifyStep.approvalPolicy ?? 'never',
+      networkAccessEnabled: verifyStep.networkAccessEnabled ?? false,
+      signal,
+      outputSchema: verifySkillSchema,
+    })
+
+    const parsed = result.parsedOutput as VerifySkillOutput | undefined
+    const summary = parsed?.summary?.trim()
+    const recommendedRecovery = normalizeVerifySkillRecovery(parsed?.recommendedRecovery)
+
+    return {
+      ...diagnosis,
+      summary: summary || diagnosis.summary,
+      recommendedRecovery:
+        diagnosis.kind === 'environment'
+          ? 'needs_decision'
+          : diagnosis.kind === 'external_blocker'
+            ? 'needs_decision'
+            : diagnosis.kind === 'plan_misalignment'
+              ? 'new_run_plan'
+              : recommendedRecovery ?? diagnosis.recommendedRecovery,
+    } satisfies VerificationDiagnosis
+  } catch (error) {
+    console.warn(`Ticket verify skill failed for ${ticket.id}:`, error)
+    return diagnosis
   }
 }
 
@@ -1565,12 +1896,40 @@ function combineRemediationNotes(...notes: Array<string | undefined>) {
   return cleaned.join('\n\n')
 }
 
-function buildMergeReapplyPromptContext(ticket: Ticket) {
-  if (ticket.mergeContext?.mode !== 'reapply_on_latest_base') {
+function buildMergeRecoveryPromptContext(ticket: Ticket) {
+  if (!ticket.mergeContext?.mode) {
     return undefined
   }
 
   const context = ticket.mergeContext
+
+  if (context.mode === 'reconcile_target_worktree') {
+    return [
+      buildTicketContext(ticket),
+      '이번 구현은 merge target의 로컬 변경을 안전하게 보존한 뒤 reviewed ticket 결과와 통합하는 reconcile 작업이다.',
+      '현재 새 worktree에는 review를 통과한 ticket 변경이 이미 선적용되어 있다.',
+      context.sourceRunId ? `원본 reviewed run: ${context.sourceRunId}` : '',
+      context.targetBranchName ? `대상 기준 브랜치: ${context.targetBranchName}` : '',
+      context.targetHeadCommit ? `대상 기준 HEAD: ${context.targetHeadCommit}` : '',
+      context.sourceReviewedBaseCommit ? `원본 reviewed base commit: ${context.sourceReviewedBaseCommit}` : '',
+      context.sourceReviewedHeadCommit ? `원본 reviewed head commit: ${context.sourceReviewedHeadCommit}` : '',
+      context.conflictFiles.length > 0 ? `merge를 막은 겹침 파일:\n${context.conflictFiles.map((file) => `- ${file}`).join('\n')}` : '',
+      context.safetyBranchName ? `보존된 target 변경 브랜치: ${context.safetyBranchName}` : '',
+      context.safetyCommit ? `보존된 target 변경 커밋: ${context.safetyCommit}` : '',
+      context.sourceFinalReportOutput ? `원본 Final Report:\n${context.sourceFinalReportOutput}` : '',
+      context.sourceReadyOutput ? `원본 Ready 출력:\n${context.sourceReadyOutput}` : '',
+      context.sourceDiffSummary ? `원본 reviewed diff 요약:\n${context.sourceDiffSummary}` : '',
+      context.safetyDiffSummary ? `보존된 target 변경 diff 요약:\n${context.safetyDiffSummary}` : '',
+      '통합 규칙:',
+      '- review를 통과한 ticket 결과를 기준선으로 유지한다.',
+      '- 보존된 target 변경의 의도는 compatible한 범위만 다시 반영한다.',
+      '- unrelated 변경은 건드리지 않는다.',
+      '- 충돌 시 reviewed ticket의 API 계약과 완료 기준을 깨지 않는 쪽을 우선한다.',
+      '- 통합이 불가능하면 억지로 우회하지 말고 검증/리뷰에서 실패가 드러나게 둔다.',
+    ]
+      .filter(Boolean)
+      .join('\n\n')
+  }
 
   return [
     buildTicketContext(ticket),
@@ -1592,15 +1951,17 @@ function buildMergeReapplyPromptContext(ticket: Ticket) {
 
 function buildImplementPrompt(ticket: Ticket, attempt: number, remediationNotes?: string): string {
   const sections: string[] = []
-  const mergeReapplyContext = buildMergeReapplyPromptContext(ticket)
+  const mergeRecoveryContext = buildMergeRecoveryPromptContext(ticket)
   const project = getProjectConfig(ticket)
   const analyzeOutput = ticket.steps.analyze?.output || '분석 결과 없음'
   const planOutput = ticket.steps.plan?.output || '계획 결과 없음'
   const acceptanceCriteria = extractAcceptanceCriteriaFromPlanOutput(planOutput)
   const latestVerificationContext = buildLatestVerificationContext(ticket)
 
-  if (mergeReapplyContext) {
-    sections.push(mergeReapplyContext)
+  sections.push(buildSkillInvocation(TICKET_IMPLEMENT_SKILL))
+
+  if (mergeRecoveryContext) {
+    sections.push(mergeRecoveryContext)
   } else {
     sections.push(buildTicketContext(ticket))
   }
@@ -1646,8 +2007,32 @@ function buildImplementPrompt(ticket: Ticket, attempt: number, remediationNotes?
   return sections.join('\n\n')
 }
 
+function buildVerifyPrompt(ticket: Ticket, project: ProjectConfig, verificationRun: VerificationRun) {
+  const acceptanceCriteria = extractAcceptanceCriteriaFromPlanOutput(ticket.steps.plan?.output || '')
+
+  return [
+    buildSkillInvocation(TICKET_VERIFY_SKILL),
+    '',
+    buildTicketContext(ticket),
+    `승인된 계획:\n${ticket.steps.plan?.output || '계획 결과 없음'}`,
+    '',
+    '완료 기준:',
+    acceptanceCriteria.length > 0 ? acceptanceCriteria.map((criterion) => `- ${criterion}`).join('\n') : '- 없음',
+    '',
+    '예정된 자동 검증 명령:',
+    formatVerificationCommandCatalog(project),
+    '',
+    `검증 결과:\n${formatVerificationRun(verificationRun)}`,
+    '',
+    '위 검증 결과를 바탕으로 다음 recovery path 하나만 추천해줘.',
+    '구현 보완 이슈면 new_run_implement, 계획 또는 완료 기준 정렬 문제면 new_run_plan, 사람 판단이 필요하면 needs_decision을 선택해줘.',
+  ].join('\n')
+}
+
 function buildAnalyzeReviewPrompt(ticket: Ticket, project: ProjectConfig) {
   return [
+    buildSkillInvocation(TICKET_STAGE_REVIEW_SKILL),
+    '',
     buildTicketContext(ticket),
     '예정된 자동 검증 명령:',
     formatVerificationCommandCatalog(project),
@@ -1661,6 +2046,8 @@ function buildAnalyzeReviewPrompt(ticket: Ticket, project: ProjectConfig) {
 
 function buildPlanReviewPrompt(ticket: Ticket, project: ProjectConfig) {
   return [
+    buildSkillInvocation(TICKET_STAGE_REVIEW_SKILL),
+    '',
     buildTicketContext(ticket),
     '예정된 자동 검증 명령:',
     formatVerificationCommandCatalog(project),
@@ -1949,6 +2336,61 @@ async function ensureWorktree(ticket: Ticket, attempt: number, signal?: AbortSig
   return worktree
 }
 
+async function prepareReconcileSeededWorktree(ticket: Ticket, signal?: AbortSignal) {
+  const context = ticket.mergeContext
+  if (!ticket.worktree || context?.mode !== 'reconcile_target_worktree' || context.reconcileSeedApplied) {
+    return
+  }
+
+  if (!context.sourceReviewedBaseCommit || !context.sourceReviewedHeadCommit) {
+    throw new Error('Reconcile worktree is missing the reviewed commit range to seed')
+  }
+
+  if (context.sourceReviewedBaseCommit === context.sourceReviewedHeadCommit) {
+    setTicketMergeContext(ticket.id, {
+      ...context,
+      conflictFiles: [...context.conflictFiles],
+      reconcileSeedApplied: true,
+      reconcileSeedHeadCommit: context.sourceReviewedHeadCommit,
+    })
+    return
+  }
+
+  const cherryPickResult = await runCommand(
+    `git cherry-pick ${quoteShellArg(`${context.sourceReviewedBaseCommit}..${context.sourceReviewedHeadCommit}`)}`,
+    ticket.worktree.worktreePath,
+    60_000,
+    signal
+  )
+  if (cherryPickResult.exitCode !== 0) {
+    await runCommand('git cherry-pick --abort', ticket.worktree.worktreePath, 15_000, signal)
+    throw new Error(cherryPickResult.output.trim() || 'Failed to pre-apply reviewed ticket changes to the reconcile worktree')
+  }
+
+  const refreshedTicket = getTicketOrThrow(ticket.id)
+  const seededHeadCommit = await readGitValue('git rev-parse HEAD', refreshedTicket.worktree!.worktreePath, signal)
+  const diffSummary = await collectCommittedTicketDiffSummary(refreshedTicket, signal)
+
+  updateTicketWorktree(ticket.id, {
+    headCommit: seededHeadCommit,
+    diffSummary,
+  })
+  const refreshedMergeContext = getTicketOrThrow(ticket.id).mergeContext
+  if (!refreshedMergeContext) {
+    throw new Error('Reconcile merge context disappeared while seeding the worktree')
+  }
+  setTicketMergeContext(ticket.id, {
+    ...refreshedMergeContext,
+    conflictFiles: [...refreshedMergeContext.conflictFiles],
+    reconcileSeedApplied: true,
+    reconcileSeedHeadCommit: seededHeadCommit,
+  })
+  appendTimelineEvent(ticket.id, {
+    type: 'system',
+    title: 'review를 통과한 ticket 변경을 reconcile worktree에 먼저 적용했습니다.',
+  })
+}
+
 async function captureWorktreeSummary(ticket: Ticket, signal?: AbortSignal) {
   if (!ticket.worktree) {
     throw new Error('Ticket worktree not initialized')
@@ -2077,6 +2519,94 @@ async function cleanupSupersededWorktree(ticketId: string, signal?: AbortSignal)
   }
 }
 
+export async function preserveTargetWorktreeForMergeReconcile(ticketId: string, signal?: AbortSignal) {
+  const ticket = getTicketOrThrow(ticketId)
+  if (!ticket.worktree || ticket.status !== 'awaiting_merge') {
+    throw new Error('Ticket is not waiting for a merge decision')
+  }
+
+  const dirtyTarget = await inspectDirtyMergeTarget(ticket, signal)
+  if (dirtyTarget.dirtyFiles.length === 0) {
+    throw new Error('Merge target has no local changes to preserve')
+  }
+
+  const repositoryRoot = resolveProjectRepositoryRoot(ticket.projectPath)
+  const targetBranchName = (await readGitValue('git branch --show-current', repositoryRoot, signal)) || undefined
+  const targetHeadCommit = await readGitValue('git rev-parse HEAD', repositoryRoot, signal)
+  const safetyBranchName = `wip/merge-safety-${ticket.id.toLowerCase()}-${Date.now()}`
+  let switchedToSafetyBranch = false
+
+  try {
+    const createBranchResult = await runCommand(`git switch -c "${safetyBranchName}"`, repositoryRoot, 30_000, signal)
+    if (createBranchResult.exitCode !== 0) {
+      throw new Error(createBranchResult.output.trim() || 'Failed to create a safety branch for the merge target')
+    }
+    switchedToSafetyBranch = true
+
+    const addResult = await runCommand('git add -A', repositoryRoot, 30_000, signal)
+    if (addResult.exitCode !== 0) {
+      throw new Error(addResult.output.trim() || 'Failed to stage target worktree changes for preservation')
+    }
+
+    const stagedCheck = await runCommand('git diff --cached --quiet --exit-code', repositoryRoot, 15_000, signal)
+    if (stagedCheck.exitCode === 0) {
+      throw new Error('Merge target has no stageable local changes to preserve')
+    }
+    if (stagedCheck.exitCode !== 1) {
+      throw new Error(stagedCheck.output.trim() || 'Failed to inspect staged target worktree changes')
+    }
+
+    const commitResult = await runCommand(
+      `git -c user.name=${quoteShellArg('Ticket Automation')} -c user.email=${quoteShellArg('ticket-automation@local')} commit --no-verify -m ${quoteShellArg(`[${ticket.id}] preserve merge target changes`)}`,
+      repositoryRoot,
+      30_000,
+      signal
+    )
+    if (commitResult.exitCode !== 0) {
+      throw new Error(commitResult.output.trim() || 'Failed to create a safety commit for the merge target')
+    }
+
+    const safetyCommit = await readGitValue('git rev-parse HEAD', repositoryRoot, signal)
+    const safetyDiffSummaryResult = await runCommand(
+      `git show --stat --format=medium ${quoteShellArg(safetyCommit)} -- . ':(exclude)node_modules'`,
+      ticket.projectPath,
+      15_000,
+      signal
+    )
+    const restoreCommand = targetBranchName
+      ? `git switch ${quoteShellArg(targetBranchName)}`
+      : `git switch --detach ${quoteShellArg(targetHeadCommit)}`
+    const restoreResult = await runCommand(restoreCommand, repositoryRoot, 30_000, signal)
+    if (restoreResult.exitCode !== 0) {
+      throw new Error(restoreResult.output.trim() || 'Failed to restore the original merge target branch')
+    }
+
+    return {
+      targetBranchName,
+      targetHeadCommit,
+      safetyBranchName,
+      safetyCommit,
+      safetyDiffSummary:
+        safetyDiffSummaryResult.exitCode === 0 && safetyDiffSummaryResult.output.trim()
+          ? safetyDiffSummaryResult.output.trim()
+          : dirtyTarget.dirtySummary || '보존된 target 변경 요약을 가져오지 못했습니다.',
+    }
+  } catch (error) {
+    if (switchedToSafetyBranch) {
+      const restoreCommand = targetBranchName
+        ? `git switch ${quoteShellArg(targetBranchName)}`
+        : `git switch --detach ${quoteShellArg(targetHeadCommit)}`
+      try {
+        await runCommand(restoreCommand, repositoryRoot, 30_000, signal)
+      } catch (restoreError) {
+        console.error(`Failed to restore merge target after preservation error for ${ticketId}:`, restoreError)
+      }
+    }
+
+    throw error
+  }
+}
+
 async function collectGitSummary(cwd: string, signal?: AbortSignal): Promise<string> {
   try {
     const status = await runCommand("git status --short -- . ':(exclude)node_modules'", cwd, 15_000, signal)
@@ -2125,6 +2655,90 @@ async function collectCommittedTicketDiffSummary(ticket: Ticket, signal?: AbortS
   } catch {
     return '커밋된 변경 요약을 가져오지 못했습니다.'
   }
+}
+
+function normalizeGitPath(path: string) {
+  const trimmed = path.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  const normalized = trimmed.includes(' -> ') ? trimmed.slice(trimmed.lastIndexOf(' -> ') + 4) : trimmed
+  if (normalized.startsWith('"') && normalized.endsWith('"')) {
+    return normalized.slice(1, -1).replace(/\\"/g, '"')
+  }
+
+  return normalized
+}
+
+function parseGitStatusPaths(output: string) {
+  const files = new Set<string>()
+
+  for (const line of output.split('\n')) {
+    const trimmed = line.trimEnd()
+    if (!trimmed) {
+      continue
+    }
+
+    const path = normalizeGitPath(trimmed.slice(3))
+    if (path) {
+      files.add(path)
+    }
+  }
+
+  return [...files]
+}
+
+async function collectTicketChangedFiles(ticket: Ticket, signal?: AbortSignal) {
+  if (!ticket.worktree) {
+    return []
+  }
+
+  const diffResult = await runCommand(
+    `git diff --name-only ${quoteShellArg(`${ticket.worktree.baseCommit}..HEAD`)} -- . ':(exclude)node_modules'`,
+    getExecutionCwd(ticket),
+    15_000,
+    signal
+  )
+  if (diffResult.exitCode !== 0) {
+    throw new Error(diffResult.output.trim() || 'Failed to collect ticket changed files')
+  }
+
+  return diffResult.output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+interface DirtyTargetInspection {
+  dirtyFiles: string[]
+  dirtySummary: string
+  overlappingFiles: string[]
+  ticketChangedFiles: string[]
+}
+
+async function inspectDirtyMergeTarget(ticket: Ticket, signal?: AbortSignal): Promise<DirtyTargetInspection> {
+  const dirtyStatus = await runCommand("git status --short --untracked-files=all -- . ':(exclude)node_modules'", ticket.projectPath, 15_000, signal)
+  if (dirtyStatus.exitCode !== 0) {
+    throw new Error(dirtyStatus.output.trim() || 'Failed to inspect merge target worktree status')
+  }
+
+  const dirtyFiles = parseGitStatusPaths(dirtyStatus.output)
+  const ticketChangedFiles = await collectTicketChangedFiles(ticket, signal)
+  const dirtyFileSet = new Set(dirtyFiles)
+  const overlappingFiles = ticketChangedFiles.filter((path) => dirtyFileSet.has(path))
+
+  return {
+    dirtyFiles,
+    dirtySummary: dirtyStatus.output.trim(),
+    overlappingFiles,
+    ticketChangedFiles,
+  }
+}
+
+function buildDirtyTargetMergeMessage(files: string[]) {
+  const detail = files.length > 0 ? `: ${files.join(', ')}` : ''
+  return `Merge target worktree has local changes overlapping reviewed ticket files${detail}`
 }
 
 async function ensureMergeableWorktreeCommit(ticket: Ticket, signal?: AbortSignal) {
@@ -2185,6 +2799,14 @@ function classifyMergeIssueKind(message: string): TicketMergeIssueKind {
     return 'head_changed_after_review'
   }
 
+  if (
+    message.includes('Merge target worktree has local changes overlapping reviewed ticket files') ||
+    message.includes('would be overwritten by merge') ||
+    message.includes('untracked working tree files would be overwritten by merge')
+  ) {
+    return 'target_worktree_dirty'
+  }
+
   if (message.includes('rebase')) {
     return 'rebase_failed'
   }
@@ -2202,6 +2824,9 @@ interface MergeIssueAnalysis {
   analysisKey?: string
   currentBaseCommit?: string
   currentHeadCommit?: string
+  targetDirtyFiles?: string[]
+  targetDirtySummary?: string
+  ticketChangedFiles?: string[]
 }
 
 function isTextConflictFile(path: string) {
@@ -2244,6 +2869,10 @@ function allowedMergeActionsForIssue(issue: TicketMergeIssueKind): TicketMergeRe
     return ['revalidate_current_worktree', 'restart_from_plan', 'discard_worktree']
   }
 
+  if (issue === 'target_worktree_dirty') {
+    return ['preserve_target_changes_and_reconcile', 'restart_from_plan', 'discard_worktree']
+  }
+
   if (issue === 'rebase_conflict_text' || issue === 'rebase_conflict_code') {
     return ['reapply_on_latest_base', 'restart_from_plan', 'discard_worktree']
   }
@@ -2261,7 +2890,30 @@ async function inspectMergeIssue(ticket: Ticket, message: string, signal?: Abort
 
   const currentBaseCommit = await readGitValue('git rev-parse HEAD', ticket.projectPath, signal)
   const currentHeadCommit = await readGitValue('git rev-parse HEAD', ticket.worktree.worktreePath, signal)
-  const analysisKey = `${ticket.worktree.baseCommit}:${currentBaseCommit}:${currentHeadCommit}`
+  const dirtyTarget = await inspectDirtyMergeTarget(ticket, signal)
+  const dirtyFingerprint = createHash('sha1')
+    .update(dirtyTarget.dirtySummary)
+    .update(`\n${dirtyTarget.overlappingFiles.join('\n')}`)
+    .digest('hex')
+  const analysisKey = `${ticket.worktree.baseCommit}:${currentBaseCommit}:${currentHeadCommit}:${dirtyFingerprint}`
+  const classifiedIssue = classifyMergeIssueKind(message)
+
+  if (classifiedIssue === 'target_worktree_dirty' || dirtyTarget.overlappingFiles.length > 0) {
+    const conflictFiles =
+      dirtyTarget.overlappingFiles.length > 0 ? dirtyTarget.overlappingFiles : dirtyTarget.dirtyFiles
+
+    return {
+      issue: 'target_worktree_dirty',
+      conflictFiles,
+      analysisKey,
+      currentBaseCommit,
+      currentHeadCommit,
+      targetDirtyFiles: dirtyTarget.dirtyFiles,
+      targetDirtySummary: dirtyTarget.dirtySummary,
+      ticketChangedFiles: dirtyTarget.ticketChangedFiles,
+    }
+  }
+
   const mergeTree = await runCommand(
     `git merge-tree ${quoteShellArg(ticket.worktree.baseCommit)} ${quoteShellArg(currentBaseCommit)} ${quoteShellArg(currentHeadCommit)}`,
     ticket.projectPath,
@@ -2281,7 +2933,7 @@ async function inspectMergeIssue(ticket: Ticket, message: string, signal?: Abort
   }
 
   return {
-    issue: classifyMergeIssueKind(message),
+    issue: classifiedIssue,
     conflictFiles: [],
     analysisKey,
     currentBaseCommit,
@@ -2318,11 +2970,18 @@ async function collectMergeDecisionEvidence(ticket: Ticket, analysis: MergeIssue
     `- 기록된 기준 커밋: \`${ticket.worktree.baseCommit}\``,
     `- 현재 worktree HEAD: \`${currentHead}\``,
     analysis.conflictFiles.length > 0 ? `- 충돌 파일: ${analysis.conflictFiles.map((entry) => `\`${entry}\``).join(', ')}` : '',
+    analysis.targetDirtyFiles?.length
+      ? `- merge를 막는 target dirty 파일: ${analysis.targetDirtyFiles.map((entry) => `\`${entry}\``).join(', ')}`
+      : '',
+    analysis.ticketChangedFiles?.length
+      ? `- reviewed ticket 변경 파일: ${analysis.ticketChangedFiles.map((entry) => `\`${entry}\``).join(', ')}`
+      : '',
     ticket.mergeContext?.lastAttemptedAction
       ? `- 마지막으로 시도한 복구 액션: \`${ticket.mergeContext.lastAttemptedAction}\``
       : '',
     relation.output.trim() ? `- 현재 기준 커밋 대비 ahead/behind: ${relation.output.trim()}` : '',
     baseDelta.output.trim() ? `- 기준 브랜치 이동 요약:\n${baseDelta.output.trim()}` : '- 기준 브랜치 이동 요약: 없음',
+    analysis.targetDirtySummary ? `- target repo dirty 상태:\n${analysis.targetDirtySummary}` : '',
     '',
     worktreeSummary,
   ]
@@ -2359,6 +3018,17 @@ function buildFallbackMergeOptions(issue: TicketMergeIssueKind): TicketMergeOpti
       label: formatMergeResolutionLabel('reapply_on_latest_base'),
       action: 'reapply_on_latest_base',
       rationale: '충돌 범위가 코드이므로 최신 기준 브랜치에서 변경 의도만 다시 적용하는 새 run이 필요합니다.',
+    })
+  }
+
+  if (issue === 'target_worktree_dirty') {
+    options.push({
+      id: 'merge-preserve-target-and-reconcile',
+      label: formatMergeResolutionLabel('preserve_target_changes_and_reconcile'),
+      action: 'preserve_target_changes_and_reconcile',
+      rationale:
+        'merge 대상을 막고 있는 로컬 변경을 안전 브랜치에 보존한 뒤, review를 통과한 ticket 결과와 새 run에서 다시 통합하는 것이 가장 안전합니다.',
+      recommended: true,
     })
   }
 
@@ -2437,7 +3107,10 @@ function isMergeDecisionRequired(message: string) {
     message.includes('Merge target branch changed since worktree creation') ||
     message.includes('Merge target commit changed since worktree creation') ||
     message.includes('Worktree head changed after review') ||
-    message.includes('Failed to merge ticket worktree branch')
+    message.includes('Merge target worktree has local changes overlapping reviewed ticket files') ||
+    message.includes('Failed to merge ticket worktree branch') ||
+    message.includes('would be overwritten by merge') ||
+    message.includes('untracked working tree files would be overwritten by merge')
   )
 }
 
@@ -2463,6 +3136,7 @@ export async function analyzeTicketMergeIssue(ticketId: string, message: string,
       prompt: buildMergeDecisionPrompt(ticket, message, evidence, allowedActions),
       promptFile: MERGE_DECISION_PROMPT_FILE,
       cwd: getExecutionCwd(ticket),
+      additionalDirectories: getProjectSkillDirectories(),
       model: getTicketModel(reviewStep),
       reasoningEffort: getTicketReasoningEffort(reviewStep),
       serviceTier: loadConfig().flows.explain.serviceTier,
@@ -2507,7 +3181,7 @@ async function runStructuredAgentStep<T>(
   formatter: (value: T) => string,
   onEvent: RunTicketWorkflowOptions['onEvent'],
   signal?: AbortSignal
-): Promise<void> {
+): Promise<T> {
   if (!stepConfig.promptFile || !stepConfig.sandboxMode || !stepConfig.approvalPolicy) {
     throw new Error(`Step "${stepConfig.id}" is not configured for agent execution`)
   }
@@ -2522,6 +3196,7 @@ async function runStructuredAgentStep<T>(
       prompt,
       promptFile: stepConfig.promptFile,
       cwd: getExecutionCwd(ticket),
+      additionalDirectories: getTicketSkillDirectories(stepConfig.id),
       threadId: getPlanningThreadId(ticket),
       stepLabel: stepConfig.id === 'analyze' ? '분석' : '계획',
       signal,
@@ -2536,6 +3211,7 @@ async function runStructuredAgentStep<T>(
     const formattedOutput = formatter(result.parsedOutput as T)
     replaceStepOutput(ticket.id, stepConfig.id, formattedOutput)
     await emitDelta(onEvent, ticket, stepConfig.id, formattedOutput)
+    return result.parsedOutput as T
   } catch (error: any) {
     if (error.name !== 'AbortError') {
       updateStepStatus(ticket.id, stepConfig.id, 'failed')
@@ -2600,7 +3276,7 @@ async function runPlan(
 
   const stepConfig = getStepConfig('plan')
 
-  await runStructuredAgentStep<PlanOutput>(
+  const planOutput = await runStructuredAgentStep<PlanOutput>(
     ticket,
     stepConfig,
     buildPlanPrompt(ticket, project, remediationNotes),
@@ -2609,6 +3285,7 @@ async function runPlan(
     onEvent,
     signal
   )
+  setTicketScopedVerification(ticket.id, normalizeScopedVerificationPlan(planOutput.scopedVerification, project))
 
   updateStepStatus(ticket.id, 'plan', 'done')
   appendTimelineEvent(ticket.id, {
@@ -2652,6 +3329,7 @@ async function runStageReview(
     prompt,
     promptFile: 'prompts/ticket-stage-review.txt',
     cwd: getExecutionCwd(ticket),
+    additionalDirectories: getTicketSkillDirectories('stage_review'),
     model: getTicketModel(reviewStep),
     reasoningEffort: getTicketReasoningEffort(reviewStep),
     serviceTier: loadConfig().flows.explain.serviceTier,
@@ -2733,7 +3411,7 @@ async function runAnalyzeUntilReviewed(
         body: remediationNotes,
       })
       if (
-        await attemptTicketSelfHeal(
+        (await attemptTicketSelfHeal(
           ticket.id,
           {
             kind: 'analyze_failed',
@@ -2743,7 +3421,7 @@ async function runAnalyzeUntilReviewed(
           },
           onEvent,
           signal
-        )
+        )) === 'started'
       ) {
         return false
       }
@@ -2837,6 +3515,28 @@ async function runPlanUntilReviewed(
   return false
 }
 
+function buildVerificationCommandPlan(ticket: Ticket, project: ProjectConfig) {
+  const scopedVerification = getScopedVerificationPlan(ticket, project)
+  const scopedCommands = (scopedVerification?.commands ?? []).map((command, index) => ({
+    id: `scoped-${index + 1}`,
+    label: command.label,
+    command: command.command,
+    stage: 'scoped' as const,
+    timeoutMs: command.timeoutMs ?? project.verificationCommands[0]?.timeoutMs ?? 120_000,
+    required: true,
+  }))
+
+  const projectCommands = project.verificationCommands.map((command) => ({
+    ...command,
+    stage: 'project' as const,
+  }))
+
+  return {
+    scopedVerification,
+    commands: [...scopedCommands, ...projectCommands],
+  }
+}
+
 async function runVerification(
   ticket: Ticket,
   project: ProjectConfig,
@@ -2861,10 +3561,11 @@ async function runVerification(
 
   const startedAt = new Date().toISOString()
   const commands: VerificationCommandResult[] = []
+  const verificationPlan = buildVerificationCommandPlan(ticket, project)
 
   try {
-    for (let index = 0; index < project.verificationCommands.length; index += 1) {
-      const commandConfig = project.verificationCommands[index]
+    for (let index = 0; index < verificationPlan.commands.length; index += 1) {
+      const commandConfig = verificationPlan.commands[index]
       ensureAbortSignal(signal)
 
       const startedAtRun = new Date().toISOString()
@@ -2889,6 +3590,7 @@ async function runVerification(
         id: commandConfig.id,
         label: commandConfig.label,
         command: commandConfig.command,
+        stage: commandConfig.stage,
         required: commandConfig.required ?? true,
         status: passed ? 'passed' : 'failed',
         output: result.output,
@@ -2900,11 +3602,12 @@ async function runVerification(
 
       if ((commandConfig.required ?? true) && !passed) {
         const skippedAt = new Date().toISOString()
-        for (const skippedCommand of project.verificationCommands.slice(index + 1)) {
+        for (const skippedCommand of verificationPlan.commands.slice(index + 1)) {
           commands.push({
             id: skippedCommand.id,
             label: skippedCommand.label,
             command: skippedCommand.command,
+            stage: skippedCommand.stage,
             required: skippedCommand.required ?? true,
             status: 'skipped',
             output: '앞선 필수 검증이 실패해 실행하지 않았습니다.',
@@ -2921,16 +3624,23 @@ async function runVerification(
       : 'passed'
     const completedAt = new Date().toISOString()
 
-    const verificationRun: VerificationRun = {
+    const baseVerificationRun: VerificationRun = {
       attempt,
       status: runStatus,
       commands,
-      diagnosis:
-        runStatus === 'failed'
-          ? diagnoseVerificationRun({ attempt, status: runStatus, commands, startedAt, completedAt }, getExecutionCwd(ticket))
-          : undefined,
       startedAt,
       completedAt,
+    }
+    const preliminaryDiagnosis =
+      runStatus === 'failed' ? diagnoseVerificationRun(baseVerificationRun, getExecutionCwd(ticket)) : undefined
+    const diagnosis =
+      preliminaryDiagnosis && preliminaryDiagnosis.kind !== 'environment'
+        ? await maybeDiagnoseVerificationWithSkill(ticket, project, baseVerificationRun, preliminaryDiagnosis, signal)
+        : preliminaryDiagnosis
+
+    const verificationRun: VerificationRun = {
+      ...baseVerificationRun,
+      diagnosis,
     }
 
     appendVerificationRun(ticket.id, verificationRun)
@@ -3002,6 +3712,7 @@ async function runReview(
       prompt: reviewPrompt,
       promptFile: stepConfig.promptFile,
       cwd: getExecutionCwd(ticket),
+      additionalDirectories: getTicketSkillDirectories(stepConfig.id),
       model: getTicketModel(stepConfig),
       reasoningEffort: getTicketReasoningEffort(stepConfig),
       serviceTier: loadConfig().flows.explain.serviceTier,
@@ -3165,6 +3876,12 @@ async function runValidationAndReady(
         return false
       }
 
+      if (verificationRun.diagnosis?.kind === 'external_blocker') {
+        clearRepairLoopForTicket(ticket.id)
+        await blockTicketOnExternalVerificationFailure(getTicketOrThrow(ticket.id), verificationRun, remediationNotes, attempt, onEvent)
+        return false
+      }
+
       const coordinated = await coordinateVerifyRecoveryDecision(
         getTicketOrThrow(ticket.id),
         project,
@@ -3196,23 +3913,42 @@ async function runValidationAndReady(
           body: remediationNotes,
         })
 
-        if (
-          await attemptTicketSelfHeal(
-            ticket.id,
-            {
-              kind: 'verify_failed',
-              message: remediationNotes,
-              phase: 'verify',
-              attempt,
-              preferredStartStep,
-            },
-            onEvent,
-            signal
-          )
-        ) {
+        const selfHealOutcome = await attemptTicketSelfHeal(
+          ticket.id,
+          {
+            kind: 'verify_failed',
+            message: remediationNotes,
+            phase: 'verify',
+            attempt,
+            preferredStartStep,
+          },
+          onEvent,
+          signal
+        )
+        if (selfHealOutcome === 'started') {
           return false
         }
 
+        if (selfHealOutcome === 'run_limit' || selfHealOutcome === 'disabled') {
+          clearRepairLoopForTicket(ticket.id)
+          setTicketPlanningBlock(
+            ticket.id,
+            buildSelfHealUnavailablePlanningBlock(
+              getTicketOrThrow(ticket.id),
+              'verify',
+              'merge 재검증 실패 후 더 이상 안전한 자동 복구를 진행할 수 없습니다.',
+              buildVerificationRecoveryFindings(verificationRun)
+            )
+          )
+          setTicketRunState(ticket.id, 'needs_decision')
+          appendTimelineEvent(ticket.id, {
+            type: 'system',
+            title: 'merge 재검증 실패 후 사람 판단이 필요한 상태로 전환했습니다.',
+            body: remediationNotes,
+          })
+          await emitDone(onEvent, getTicketOrThrow(ticket.id), 'verify', 'failed', attempt)
+          return false
+        }
         setTicketRunState(ticket.id, 'failed')
         appendTimelineEvent(ticket.id, {
           type: 'system',
@@ -3298,7 +4034,7 @@ async function runValidationAndReady(
       })
 
       if (
-        await attemptTicketSelfHeal(
+        (await attemptTicketSelfHeal(
           ticket.id,
           {
             kind: 'review_failed',
@@ -3309,7 +4045,7 @@ async function runValidationAndReady(
           },
           onEvent,
           signal
-        )
+        )) === 'started'
       ) {
         return false
       }
@@ -3395,7 +4131,7 @@ function buildVerificationFeedback(run: VerificationRun): string {
       const excerpt = command.output.trim().split('\n').slice(-20).join('\n')
       const diagnosisCommand = diagnosisCommandById.get(command.id)
       return [
-        `- ${command.label} (\`${command.command}\`)`,
+        `- ${command.label} [${command.stage === 'scoped' ? 'scoped' : 'project'}] (\`${command.command}\`)`,
         diagnosisCommand?.logPath ? `로그: ${diagnosisCommand.logPath}` : undefined,
         '```text',
         excerpt || '(no output)',
@@ -3405,6 +4141,87 @@ function buildVerificationFeedback(run: VerificationRun): string {
         .join('\n')
     }),
   ].join('\n\n')
+}
+
+function getBlockerCategory() {
+  return loadConfig().flows.ticket.categories.find((category) => category.id === 'bugfix')
+}
+
+function buildExternalVerifyBlockerTitle(ticket: Ticket) {
+  return `전체 검증 blocker: ${ticket.title}`
+}
+
+function buildExternalVerifyBlockerDescription(ticket: Ticket, verificationRun: VerificationRun, remediationNotes: string) {
+  const diagnosis = verificationRun.diagnosis
+  const failingTests = diagnosis?.failingTests.slice(0, 10) ?? []
+
+  return [
+    '## Problem',
+    `원본 ticket \`${ticket.id}\`는 범위 검증을 통과했지만 프로젝트 전체 검증에서 범위 밖 회귀에 막혔습니다.`,
+    '',
+    '## Desired Outcome',
+    `프로젝트 전체 검증 회귀를 해결해 원본 ticket \`${ticket.id}\`가 verify 단계부터 자동 재개될 수 있어야 합니다.`,
+    '',
+    '## Constraints',
+    '- 원본 ticket 기능 범위를 넓히지 않고 전체 검증 회귀만 해결합니다.',
+    `- 해결 후 원본 ticket \`${ticket.id}\`는 verify부터 다시 실행됩니다.`,
+    '',
+    '## Verification Evidence',
+    remediationNotes,
+    '',
+    '## Failing Tests',
+    ...(failingTests.length > 0
+      ? failingTests.map((test) => `- ${test.suite} :: ${test.name} / ${normalizeDiagnosticText(test.message).slice(0, 180)}`)
+      : ['- 저장된 테스트 세부는 부족하지만 전체 project verify가 실패했습니다.']),
+  ].join('\n')
+}
+
+function ensureExternalVerifyBlockerTicket(ticket: Ticket, verificationRun: VerificationRun, remediationNotes: string) {
+  const existingBlocker = ticket.blockedByTicketId ? getTicket(ticket.blockedByTicketId) : undefined
+  if (existingBlocker && existingBlocker.status !== 'completed' && existingBlocker.status !== 'discarded') {
+    return existingBlocker
+  }
+
+  const category = getBlockerCategory()
+  if (!category) {
+    throw new Error('Bugfix category is required to create an external verify blocker ticket')
+  }
+
+  const blockerTicket = createTicket({
+    title: buildExternalVerifyBlockerTitle(ticket),
+    description: buildExternalVerifyBlockerDescription(ticket, verificationRun, remediationNotes),
+    projectId: ticket.projectId,
+    projectPath: ticket.projectPath,
+    categoryId: category.id,
+    flowStepIds: [...category.steps],
+    linkedRequestId: ticket.linkedRequestId,
+    originTicketId: ticket.id,
+  })
+
+  enqueueTicketExecution(
+    blockerTicket.id,
+    'analyze',
+    `원본 ticket ${ticket.id}의 프로젝트 전체 검증 회귀를 해결한 뒤 verify 재개가 가능하도록 정리합니다.`
+  )
+  return blockerTicket
+}
+
+async function blockTicketOnExternalVerificationFailure(
+  ticket: Ticket,
+  verificationRun: VerificationRun,
+  remediationNotes: string,
+  attempt: number,
+  onEvent: RunTicketWorkflowOptions['onEvent']
+) {
+  const blockerTicket = ensureExternalVerifyBlockerTicket(ticket, verificationRun, remediationNotes)
+  setTicketBlockerLink(ticket.id, blockerTicket.id, 'external_verify_blocker')
+  setTicketRunState(ticket.id, 'blocked')
+  appendTimelineEvent(ticket.id, {
+    type: 'system',
+    title: `프로젝트 전체 검증 회귀를 별도 blocker ticket ${blockerTicket.id}로 분리했습니다.`,
+    body: `원본 ticket은 blocked 상태로 유지하고, 범위 밖 회귀는 ${blockerTicket.id}에서 해결합니다.`,
+  })
+  await emitDone(onEvent, getTicketOrThrow(ticket.id), 'verify', 'failed', attempt)
 }
 
 export function classifyVerificationFailure(run: VerificationRun): VerificationFailureClassification {
@@ -3458,6 +4275,8 @@ interface TicketSelfHealTrigger {
   phase: 'analyze' | 'verify' | 'review'
   preferredStartStep?: 'analyze' | 'plan' | 'implement'
 }
+
+type TicketSelfHealOutcome = 'started' | 'run_limit' | 'disabled' | 'failed'
 
 interface ReviewRecoveryDecision {
   kind: 'same_run_implement' | 'new_run_implement' | 'new_run_plan' | 'needs_decision' | 'needs_request_clarification'
@@ -3652,6 +4471,23 @@ async function coordinateVerifyRecoveryDecision(
   signal?: AbortSignal
 ): Promise<{ remediationNotes: string; recovery: ReviewRecoveryDecision }> {
   const diagnosis = verificationRun.diagnosis
+
+  if (diagnosis?.kind === 'external_blocker') {
+    return {
+      remediationNotes,
+      recovery: {
+        kind: 'needs_decision',
+        rationale: '범위 검증은 통과했지만 프로젝트 전체 회귀가 발생해 별도 blocker 처리 또는 사람 판단이 필요합니다.',
+        planningBlock: {
+          kind: 'needs_decision',
+          source: 'verify',
+          summary: '프로젝트 전체 검증 회귀가 발생했습니다.',
+          findings: buildVerificationRecoveryFindings(verificationRun),
+          options: buildRecoveryRetryOptions(ticket, 'verify'),
+        },
+      },
+    }
+  }
 
   if (diagnosis?.kind === 'plan_misalignment') {
     return {
@@ -3967,14 +4803,14 @@ async function attemptTicketSelfHeal(
   trigger: TicketSelfHealTrigger,
   onEvent: RunTicketWorkflowOptions['onEvent'],
   signal?: AbortSignal
-) {
+): Promise<TicketSelfHealOutcome> {
   if (!ticketSelfHealingEnabled) {
-    return false
+    return 'disabled'
   }
 
   const ticket = getTicketOrThrow(ticketId)
   if (ticket.runSummaries.length >= MAX_TICKET_WORKFLOW_RUNS) {
-    return false
+    return 'run_limit'
   }
 
   const decision = determineSelfHealStartStep(ticket, trigger)
@@ -3997,7 +4833,7 @@ async function attemptTicketSelfHeal(
       shouldCleanupWorktree,
     })
     if (!reset) {
-      return false
+      return 'failed'
     }
 
     appendTimelineEvent(ticketId, {
@@ -4014,10 +4850,10 @@ async function attemptTicketSelfHeal(
       onEvent,
     })
 
-    return true
+    return 'started'
   } catch (error) {
     console.error(`Failed to self-heal ticket ${ticketId}:`, error)
-    return false
+    return 'failed'
   }
 }
 
@@ -4045,8 +4881,9 @@ async function runImplementLoop(
     loopAttempts += 1
     attempt += 1
     setTicketAttemptCount(ticket.id, attempt)
+    await ensureWorktree(getTicketOrThrow(ticket.id), attempt, signal)
+    await prepareReconcileSeededWorktree(getTicketOrThrow(ticket.id), signal)
     const activeTicket = getTicketOrThrow(ticket.id)
-    await ensureWorktree(activeTicket, attempt, signal)
 
     setTicketCurrentPhase(ticket.id, 'implement')
     updateStepStatus(ticket.id, 'implement', 'running')
@@ -4070,6 +4907,7 @@ async function runImplementLoop(
       prompt: buildImplementPrompt(activeTicket, attempt, remediationNotes),
       promptFile: implementStep.promptFile,
       cwd: getExecutionCwd(activeTicket),
+      additionalDirectories: getTicketSkillDirectories(implementStep.id),
       threadId: getImplementationThreadId(activeTicket),
       stepLabel: `구현 ${attempt}회`,
       signal,
@@ -4120,6 +4958,12 @@ async function runImplementLoop(
           return
         }
 
+        if (verificationRun.diagnosis?.kind === 'external_blocker') {
+          clearRepairLoopForTicket(ticket.id)
+          await blockTicketOnExternalVerificationFailure(getTicketOrThrow(ticket.id), verificationRun, remediationNotes, attempt, onEvent)
+          return
+        }
+
         const coordination = await coordinateVerifyRecoveryDecision(
           getTicketOrThrow(ticket.id),
           project,
@@ -4150,20 +4994,40 @@ async function runImplementLoop(
             body: remediationNotes,
           })
 
-          if (
-            await attemptTicketSelfHeal(
+          const selfHealOutcome = await attemptTicketSelfHeal(
+            ticket.id,
+            {
+              kind: 'verify_failed',
+              message: remediationNotes,
+              phase: 'verify',
+              attempt,
+              preferredStartStep,
+            },
+            onEvent,
+            signal
+          )
+          if (selfHealOutcome === 'started') {
+            return
+          }
+
+          if (selfHealOutcome === 'run_limit' || selfHealOutcome === 'disabled') {
+            clearRepairLoopForTicket(ticket.id)
+            setTicketPlanningBlock(
               ticket.id,
-              {
-                kind: 'verify_failed',
-                message: remediationNotes,
-                phase: 'verify',
-                attempt,
-                preferredStartStep,
-              },
-              onEvent,
-              signal
+              buildSelfHealUnavailablePlanningBlock(
+                getTicketOrThrow(ticket.id),
+                'verify',
+                '자동 검증 실패 후 더 이상 안전한 자동 복구를 진행할 수 없습니다.',
+                buildVerificationRecoveryFindings(verificationRun)
+              )
             )
-          ) {
+            setTicketRunState(ticket.id, 'needs_decision')
+            appendTimelineEvent(ticket.id, {
+              type: 'system',
+              title: '자동 검증 실패 후 사람 판단이 필요한 상태로 전환했습니다.',
+              body: remediationNotes,
+            })
+            await emitDone(onEvent, getTicketOrThrow(ticket.id), 'verify', 'failed', attempt)
             return
           }
 
@@ -4272,7 +5136,7 @@ async function runImplementLoop(
         })
 
         if (
-          await attemptTicketSelfHeal(
+          (await attemptTicketSelfHeal(
             ticket.id,
             {
               kind: 'review_failed',
@@ -4283,7 +5147,7 @@ async function runImplementLoop(
             },
             onEvent,
             signal
-          )
+          )) === 'started'
         ) {
           return
         }
@@ -4512,6 +5376,11 @@ export async function mergeTicketWorktree(ticketId: string, signal?: AbortSignal
   const currentHead = await readGitValue('git rev-parse HEAD', ticket.worktree.worktreePath, signal)
   if (ticket.worktree.headCommit && currentHead !== ticket.worktree.headCommit) {
     throw new Error('Worktree head changed after review. Re-run review before merging.')
+  }
+
+  const dirtyTarget = await inspectDirtyMergeTarget(ticket, signal)
+  if (dirtyTarget.overlappingFiles.length > 0) {
+    throw new Error(buildDirtyTargetMergeMessage(dirtyTarget.overlappingFiles))
   }
 
   const mergeResult = await runCommand(

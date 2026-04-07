@@ -47,6 +47,7 @@ export interface RunCodexTurnOptions {
   prompt: string
   promptFile: string
   cwd: string
+  additionalDirectories?: string[]
   threadId?: string
   model: string
   reasoningEffort?: AppReasoningEffort
@@ -156,6 +157,7 @@ export async function runCodexTurn<T = unknown>(
 
   const threadOptions = {
     workingDirectory: opts.cwd,
+    additionalDirectories: opts.additionalDirectories,
     model: opts.model,
     sandboxMode,
     approvalPolicy: opts.approvalPolicy,

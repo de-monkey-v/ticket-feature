@@ -134,6 +134,9 @@ function requiresMergeDecision(message: string) {
     message.includes('Merge target commit changed since worktree creation') ||
     message.includes('Worktree head changed after review') ||
     message.includes('Failed to merge ticket worktree branch') ||
+    message.includes('Merge target worktree has local changes overlapping reviewed ticket files') ||
+    message.includes('would be overwritten by merge') ||
+    message.includes('untracked working tree files would be overwritten by merge') ||
     /rebase/i.test(message)
   )
 }

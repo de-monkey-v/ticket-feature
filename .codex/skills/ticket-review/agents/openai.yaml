@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ticket Review"
+  short_description: "Review ticket changes against plan and goals"
+  default_prompt: "Use $ticket-review to review ticket changes against the approved plan, request, and acceptance criteria."
