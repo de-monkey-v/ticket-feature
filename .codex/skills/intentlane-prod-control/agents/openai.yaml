@@ -1,0 +1,4 @@
+interface:
+  display_name: "Intentlane Prod Control"
+  short_description: "Control the production systemd service for this repo"
+  default_prompt: "Use $intentlane-prod-control to start, stop, restart, or inspect the production service for this repository."

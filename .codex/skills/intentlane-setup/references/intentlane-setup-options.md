@@ -6,7 +6,7 @@
 - Auth: bootstrap root admin
 - Root account name: `admin`
 - Runtime data isolation: `INTENTLANE_CODEX_DATA_DIR=.local/dev-data`
-- Host and port: `HOST=0.0.0.0`, `PORT=3001`
+- Host and port: `HOST=0.0.0.0`, `PORT=4000`
 - CORS: leave `APP_ALLOWED_ORIGINS` empty unless the web UI is hosted on a different origin
 
 ## Question order
@@ -36,8 +36,8 @@ pnpm dev
 ```
 
 - Web UI: `http://localhost:5173/`
-- API: `http://localhost:3001/`
-- Health: `http://localhost:3001/api/health`
+- API: `http://localhost:4000/`
+- Health: `http://localhost:4000/api/health`
 
 `pnpm dev` runs:
 
@@ -53,7 +53,7 @@ pnpm build
 pnpm start
 ```
 
-- App + API: `http://localhost:3001/`
+- App + API: `http://localhost:4000/`
 - Do not run `pnpm start` before `pnpm build`
 
 ## Sanity checks
@@ -61,7 +61,7 @@ pnpm start
 ### Health
 
 ```bash
-curl http://localhost:3001/api/health
+curl http://localhost:4000/api/health
 ```
 
 Expected response:
@@ -73,7 +73,7 @@ Expected response:
 ### Bootstrap root login
 
 ```bash
-curl -X POST http://localhost:3001/api/access/login \
+curl -X POST http://localhost:4000/api/access/login \
   -H 'Content-Type: application/json' \
   -d '{"name":"admin","password":"<password>"}'
 ```

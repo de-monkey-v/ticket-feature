@@ -29,14 +29,14 @@ from urllib.parse import urlparse
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='0.0.0.0')
-    parser.add_argument('--port', type=int, default=3001)
+    parser.add_argument('--port', type=int, default=4000)
     parser.add_argument('--bootstrap-root-name', default='admin')
     parser.add_argument('--bootstrap-root-password')
     parser.add_argument('--shared-token')
     parser.add_argument('--allow-open-access', action='store_true')
     parser.add_argument('--allowed-origin', action='append', default=[])
     parser.add_argument('--runtime-settings-path')
-    parser.add_argument('--data-dir')
+    parser.add_argument('--data-dir', default='.local/dev-data')
     parser.add_argument('--output')
     return parser.parse_args()
 

@@ -15,7 +15,7 @@ bootstrapApiProcess()
 
 const app = createApp()
 
-const port = Number(process.env.PORT?.trim() || '3001')
+const port = Number(process.env.PORT?.trim() || '4000')
 const hostname = resolveApiHostname()
 
 assertApiAuthenticationConfigured({

@@ -1,6 +1,6 @@
 ---
 name: intentlane-setup
-description: Guide interactive setup of the `intentlane-codex` repository and generate a safe first-run `.env`. Use when Codex needs to help a user install dependencies, choose between `pnpm dev` and `pnpm build && pnpm start`, decide on bootstrap-root, shared-token, or local-only open access authentication, isolate runtime data with `INTENTLANE_CODEX_DATA_DIR`, or sanity-check health and login on a fresh clone of this repo.
+description: Guide interactive setup of the `intentlane-codex` repository from fresh clone to first successful run, and generate a safe first-run `.env`. Use when Codex needs to help a user after `git clone`, install dependencies, choose between `pnpm dev` and `pnpm build && pnpm start`, decide on bootstrap-root, shared-token, or local-only open access authentication, isolate runtime data with `INTENTLANE_CODEX_DATA_DIR`, or sanity-check health and login on a fresh clone of this repo.
 ---
 
 # Intentlane Setup
@@ -9,11 +9,32 @@ Use this skill to onboard a fresh clone of this repository or repair a broken lo
 
 ## Quick Start
 
-1. Confirm whether the user wants `pnpm dev` or `pnpm build && pnpm start`.
-2. Ask one short question at a time until you know exposure, auth path, data directory, and whether to execute commands or only prepare files.
-3. Read `references/intentlane-setup-options.md` before choosing values.
-4. Generate the `.env` content with `scripts/render_env.py` instead of composing it from memory.
-5. Run install, launch, and sanity-check commands only after the configuration is clear.
+1. Confirm whether the repository is a fresh clone, whether `.env` already exists, and whether dependencies are already installed.
+2. Confirm whether the user wants `pnpm dev` or `pnpm build && pnpm start`.
+3. Default a fresh clone to bootstrap root auth, `INTENTLANE_CODEX_DATA_DIR=.local/dev-data`, `HOST=0.0.0.0`, and `PORT=4000` unless the user explicitly wants something else.
+4. Ask one short question at a time until you know exposure, auth path, data directory, and whether to execute commands or only prepare files.
+5. Read `references/intentlane-setup-options.md` before choosing values.
+6. Generate the `.env` content with `scripts/render_env.py` instead of composing it from memory.
+7. Run install, launch, and sanity-check commands only after the configuration is clear.
+
+## Fresh Clone Path
+
+When the user just cloned the repo and wants it running quickly, prefer this path:
+
+1. Verify prerequisites and current repo state.
+2. Run `pnpm install` if `node_modules` is missing or stale.
+3. Generate `.env` with bootstrap root auth and `.local/dev-data` unless the user chose another auth path.
+4. Start `pnpm dev` by default.
+5. Verify `curl http://localhost:4000/api/health`.
+6. Verify login with the bootstrap root account.
+7. Tell the user which browser URL to open and whether they must change the initial password.
+
+Use this fast path for prompts like:
+
+- `git clone 했는데 바로 띄우고 싶어`
+- `fresh clone setup 해줘`
+- `이 저장소 실행되게 .env부터 dev 서버까지 잡아줘`
+- `Use $intentlane-setup to get this repo running after clone`
 
 ## Workflow
 
@@ -32,7 +53,7 @@ Use this skill to onboard a fresh clone of this repository or repair a broken lo
   - bootstrap root auth
   - `INTENTLANE_CODEX_DATA_DIR=.local/dev-data`
   - `HOST=0.0.0.0`
-  - `PORT=3001`
+  - `PORT=4000`
 
 ### 2. Check prerequisites
 
@@ -76,20 +97,20 @@ python3 .codex/skills/intentlane-setup/scripts/render_env.py \
 - Development mode:
   - `pnpm dev`
   - web UI: `http://localhost:5173/`
-  - API: `http://localhost:3001/`
+  - API: `http://localhost:4000/`
 - Built app mode:
   - `pnpm build`
   - `pnpm start`
-  - app and API: `http://localhost:3001/`
+  - app and API: `http://localhost:4000/`
 - Explain that `pnpm dev` needs the server, worker, and web processes together, and that `worker` is required for ticket automation.
 
 ### 6. Sanity-check the setup
 
-- Run `curl http://localhost:3001/api/health` after the server is up.
+- Run `curl http://localhost:4000/api/health` after the server is up.
 - If bootstrap root auth is enabled, verify login with:
 
 ```bash
-curl -X POST http://localhost:3001/api/access/login \
+curl -X POST http://localhost:4000/api/access/login \
   -H 'Content-Type: application/json' \
   -d '{"name":"admin","password":"<password>"}'
 ```
