@@ -1,0 +1,86 @@
+<svg width="1280" height="560" viewBox="0 0 1280 560" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="560" rx="28" fill="#0B0D12"/>
+  <rect x="28" y="28" width="1224" height="504" rx="24" fill="#11141B" stroke="#232838" stroke-width="2"/>
+
+  <text x="52" y="72" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="28" font-weight="700">How Intentlane Is Typically Used</text>
+  <text x="52" y="101" fill="#98A2B3" font-family="Arial, sans-serif" font-size="15">From understanding an existing repo to executing a tracked change</text>
+
+  <text x="74" y="158" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">User flow</text>
+
+  <rect x="74" y="184" width="164" height="88" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="98" y="220" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">1. Register</text>
+  <text x="98" y="246" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Choose a local repo</text>
+  <text x="98" y="266" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">as the current project</text>
+
+  <path d="M238 228H282" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M272 218L288 228L272 238" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="292" y="184" width="164" height="88" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="316" y="220" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">2. Explain</text>
+  <text x="316" y="246" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Ask how the code works</text>
+  <text x="316" y="266" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">before changing it</text>
+
+  <path d="M456 228H500" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M490 218L506 228L490 238" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="510" y="184" width="164" height="88" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="534" y="220" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">3. Request</text>
+  <text x="534" y="246" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Write the problem and</text>
+  <text x="534" y="266" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">desired outcome clearly</text>
+
+  <path d="M674 228H718" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M708 218L724 228L708 238" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="728" y="184" width="164" height="88" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="752" y="220" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">4. Ticket</text>
+  <text x="752" y="246" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Promote the request into</text>
+  <text x="752" y="266" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">a tracked implementation</text>
+
+  <path d="M892 228H936" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M926 218L942 228L926 238" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="946" y="184" width="220" height="88" rx="18" fill="#1E4FFF" fill-opacity="0.18" stroke="#5B8CFF"/>
+  <text x="972" y="220" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">5. Run stages</text>
+  <text x="972" y="246" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">analyze - plan - implement -</text>
+  <text x="972" y="266" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">verify - review - ready</text>
+
+  <text x="74" y="338" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">What the app does behind the UI</text>
+
+  <rect x="74" y="364" width="210" height="112" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="98" y="399" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">Hono API</text>
+  <text x="98" y="425" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Serves the UI, auth, config,</text>
+  <text x="98" y="445" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">requests, tickets, and SSE</text>
+
+  <path d="M284 420H332" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M322 410L338 420L322 430" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="342" y="364" width="210" height="112" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="366" y="399" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">Worker</text>
+  <text x="366" y="425" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Runs background ticket steps</text>
+  <text x="366" y="445" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">and verification commands</text>
+
+  <path d="M552 420H600" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M590 410L606 420L590 430" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="610" y="364" width="210" height="112" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="634" y="399" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">Codex SDK</text>
+  <text x="634" y="425" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Drives Explain, Request, and</text>
+  <text x="634" y="445" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Ticket stage prompts</text>
+
+  <path d="M820 420H868" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M858 410L874 420L858 430" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="878" y="364" width="172" height="112" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="902" y="399" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">Git worktree</text>
+  <text x="902" y="425" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Uses local repo state</text>
+  <text x="902" y="445" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">for real execution</text>
+
+  <path d="M1050 420H1098" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M1088 410L1104 420L1088 430" stroke="#5B8CFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="1108" y="364" width="112" height="112" rx="18" fill="#131824" stroke="#2B3143"/>
+  <text x="1132" y="399" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">State</text>
+  <text x="1132" y="425" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">tickets/</text>
+  <text x="1132" y="445" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">requests/</text>
+  <text x="1132" y="465" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">explain/</text>
+</svg>

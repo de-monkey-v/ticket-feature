@@ -1,0 +1,83 @@
+<svg width="1280" height="760" viewBox="0 0 1280 760" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="760" rx="28" fill="#0B0D12"/>
+  <rect x="28" y="28" width="1224" height="704" rx="24" fill="#11141B" stroke="#232838" stroke-width="2"/>
+
+  <text x="52" y="72" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="28" font-weight="700">Intentlane Workspace Overview</text>
+  <text x="52" y="101" fill="#98A2B3" font-family="Arial, sans-serif" font-size="15">A local UI for code understanding, request drafting, and ticket execution</text>
+
+  <rect x="52" y="126" width="262" height="578" rx="18" fill="#0D1017" stroke="#232838"/>
+  <text x="76" y="166" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">1. Workspace + Threads</text>
+  <text x="76" y="193" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">Switch between Explain, Direct Dev, Requests,</text>
+  <text x="76" y="213" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">and Ticket. Reopen old threads from the list.</text>
+  <rect x="76" y="234" width="214" height="44" rx="10" fill="#1E4FFF"/>
+  <text x="96" y="262" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="16" font-weight="700">Explain</text>
+  <rect x="76" y="286" width="214" height="44" rx="10" fill="#161A23" stroke="#2B3143"/>
+  <text x="96" y="314" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="16">Direct Dev</text>
+  <rect x="76" y="338" width="214" height="44" rx="10" fill="#161A23" stroke="#2B3143"/>
+  <text x="96" y="366" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="16">Requests</text>
+  <rect x="76" y="390" width="214" height="44" rx="10" fill="#161A23" stroke="#2B3143"/>
+  <text x="96" y="418" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="16">Ticket</text>
+
+  <rect x="76" y="468" width="214" height="170" rx="14" fill="#141925" stroke="#2B3143"/>
+  <text x="94" y="498" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="16" font-weight="700">Saved explain threads</text>
+  <rect x="94" y="518" width="178" height="38" rx="10" fill="#1A2147"/>
+  <text x="108" y="542" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="13">Explain this project</text>
+  <rect x="94" y="566" width="178" height="38" rx="10" fill="#171B24"/>
+  <text x="108" y="590" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">What should go to GitHub?</text>
+  <rect x="94" y="614" width="178" height="38" rx="10" fill="#171B24"/>
+  <text x="108" y="638" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">Terms work review</text>
+
+  <rect x="338" y="126" width="640" height="110" rx="18" fill="#0D1017" stroke="#232838"/>
+  <text x="364" y="166" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">2. Project + Model Controls</text>
+  <text x="364" y="193" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">Pick the current project, model, effort, and response mode before running Explain or Ticket work.</text>
+  <rect x="364" y="205" width="184" height="16" rx="8" fill="#2B3143"/>
+  <rect x="566" y="205" width="132" height="16" rx="8" fill="#2B3143"/>
+  <rect x="716" y="205" width="96" height="16" rx="8" fill="#2B3143"/>
+  <rect x="830" y="205" width="124" height="16" rx="8" fill="#1E4FFF"/>
+
+  <rect x="338" y="254" width="640" height="450" rx="18" fill="#0D1017" stroke="#232838"/>
+  <text x="364" y="294" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">3. Main Work Area</text>
+  <text x="364" y="321" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">Explain answers, request drafts, and ticket details appear here.</text>
+  <rect x="364" y="344" width="588" height="268" rx="16" fill="#131824" stroke="#2B3143"/>
+  <text x="388" y="382" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="16" font-weight="700">Typical first prompt</text>
+  <text x="388" y="412" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="15">"Explain this project, then point me to the important files."</text>
+  <text x="388" y="451" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">The assistant reads code, summarizes the runtime model,</text>
+  <text x="388" y="472" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">and can turn implementation intent into a Request or Ticket.</text>
+  <rect x="388" y="507" width="340" height="76" rx="12" fill="#171B24" stroke="#2B3143"/>
+  <text x="410" y="538" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="14" font-weight="700">Helpful outputs</text>
+  <text x="410" y="562" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">Repo map, architecture summary, risk notes,</text>
+  <text x="410" y="582" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">request draft, ticket plan, review findings</text>
+  <rect x="364" y="634" width="508" height="42" rx="12" fill="#131824" stroke="#2B3143"/>
+  <text x="388" y="660" fill="#667085" font-family="Arial, sans-serif" font-size="14">Ask a question, paste a request, or continue a thread...</text>
+  <rect x="884" y="634" width="68" height="42" rx="12" fill="#1E4FFF"/>
+  <text x="904" y="660" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="14" font-weight="700">Send</text>
+
+  <rect x="1002" y="126" width="226" height="578" rx="18" fill="#0D1017" stroke="#232838"/>
+  <text x="1026" y="166" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="18" font-weight="700">4. Reply History</text>
+  <text x="1026" y="193" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">Completed replies can be reopened without</text>
+  <text x="1026" y="213" fill="#98A2B3" font-family="Arial, sans-serif" font-size="14">rerunning the same question.</text>
+
+  <rect x="1026" y="244" width="178" height="42" rx="12" fill="#171B24" stroke="#2B3143"/>
+  <text x="1044" y="270" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="14">Sort: latest first</text>
+
+  <rect x="1026" y="308" width="178" height="116" rx="14" fill="#131824" stroke="#2B3143"/>
+  <text x="1044" y="338" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="15" font-weight="700">Explain</text>
+  <text x="1044" y="362" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">Explain this project</text>
+  <rect x="1044" y="382" width="56" height="28" rx="14" fill="#FFFFFF"/>
+  <text x="1062" y="400" fill="#11141B" font-family="Arial, sans-serif" font-size="12" font-weight="700">Open</text>
+  <rect x="1110" y="382" width="56" height="28" rx="14" fill="#171B24" stroke="#2B3143"/>
+  <text x="1128" y="400" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="12">Close</text>
+
+  <rect x="1026" y="438" width="178" height="116" rx="14" fill="#131824" stroke="#2B3143"/>
+  <text x="1044" y="468" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="15" font-weight="700">Explain</text>
+  <text x="1044" y="492" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">What belongs in GitHub?</text>
+  <rect x="1044" y="512" width="56" height="28" rx="14" fill="#FFFFFF"/>
+  <text x="1062" y="530" fill="#11141B" font-family="Arial, sans-serif" font-size="12" font-weight="700">Open</text>
+  <rect x="1110" y="512" width="56" height="28" rx="14" fill="#171B24" stroke="#2B3143"/>
+  <text x="1128" y="530" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="12">Close</text>
+
+  <rect x="1026" y="568" width="178" height="116" rx="14" fill="#131824" stroke="#2B3143"/>
+  <text x="1044" y="598" fill="#F3F4F6" font-family="Arial, sans-serif" font-size="15" font-weight="700">Thread status</text>
+  <text x="1044" y="622" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">Running, completed, or ready</text>
+  <text x="1044" y="642" fill="#D0D5DD" font-family="Arial, sans-serif" font-size="13">threads live here for quick access.</text>
+</svg>
