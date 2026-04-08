@@ -119,3 +119,56 @@ export function shouldBypassRequestInterceptForExplain(userContent: string, inte
     declineRequestPatterns.some((pattern) => pattern.test(normalized))
   )
 }
+
+export function shouldInterceptImplementationRequestForExplain(
+  userContent: string,
+  interceptImplementationRequests: boolean
+) {
+  if (!interceptImplementationRequests) {
+    return false
+  }
+
+  const normalized = userContent.trim().toLowerCase()
+  if (!normalized) {
+    return false
+  }
+
+  const actionPatterns = [
+    /구현/,
+    /수정/,
+    /변경/,
+    /추가/,
+    /고쳐/,
+    /만들/,
+    /리팩토링/,
+    /붙여/,
+    /연결/,
+    /적용/,
+    /\bimplement\b/,
+    /\bfix\b/,
+    /\bbuild\b/,
+    /\bcreate\b/,
+    /\badd\b/,
+    /\bmodify\b/,
+    /\bupdate\b/,
+    /\brefactor\b/,
+  ]
+  const contextPatterns = [
+    /버튼/,
+    /기능/,
+    /화면/,
+    /ui/,
+    /api/,
+    /컴포넌트/,
+    /페이지/,
+    /코드/,
+    /파일/,
+    /hook/,
+    /route/,
+    /테스트/,
+    /동작/,
+  ]
+
+  return actionPatterns.some((pattern) => pattern.test(normalized)) &&
+    contextPatterns.some((pattern) => pattern.test(normalized))
+}

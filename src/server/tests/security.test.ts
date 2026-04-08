@@ -275,6 +275,7 @@ test('toPublicConfig hides filesystem paths from the browser', () => {
   assert.deepEqual(publicConfig.explain.availableModels[0]?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh'])
   assert.equal(publicConfig.explain.selectedModel, 'gpt-5.4')
   assert.equal(publicConfig.explain.selectedReasoningEffort, 'medium')
+  assert.equal(publicConfig.explain.interceptImplementationRequests, true)
   assert.equal(publicConfig.direct.availableModels.length, 5)
   assert.equal(publicConfig.direct.selectedModel, 'gpt-5.4')
   assert.equal(publicConfig.direct.selectedReasoningEffort, 'medium')

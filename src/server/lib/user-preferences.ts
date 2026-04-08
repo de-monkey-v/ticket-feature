@@ -16,9 +16,13 @@ export interface UserModelPreferences {
   reasoningEffort?: ReasoningEffort
 }
 
+export interface UserExplainPreferences extends UserModelPreferences {
+  interceptImplementationRequests?: boolean
+}
+
 export interface UserPreferences {
   chat: UserChatPreferences | null
-  explain: UserModelPreferences | null
+  explain: UserExplainPreferences | null
   direct: UserModelPreferences | null
 }
 
@@ -43,6 +47,10 @@ function readString(value: unknown) {
   return typeof value === 'string' ? value : undefined
 }
 
+function readBoolean(value: unknown) {
+  return typeof value === 'boolean' ? value : undefined
+}
+
 function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return (
     value === 'none' ||
@@ -65,6 +73,26 @@ function normalizeUserChatPreferences(value: unknown): UserChatPreferences | nul
 
   const initialScrollTarget = normalizeChatInitialScrollTarget(value.initialScrollTarget)
   return initialScrollTarget ? { initialScrollTarget } : null
+}
+
+function normalizeUserExplainPreferences(value: unknown): UserExplainPreferences | null {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const model = readString(value.model)?.trim()
+  const reasoningEffort = isReasoningEffort(value.reasoningEffort) ? value.reasoningEffort : undefined
+  const interceptImplementationRequests = readBoolean(value.interceptImplementationRequests)
+
+  if (!model && !reasoningEffort && interceptImplementationRequests === undefined) {
+    return null
+  }
+
+  return {
+    model: model ? getModelCapability(model).id : undefined,
+    reasoningEffort,
+    interceptImplementationRequests,
+  }
 }
 
 function normalizeUserModelPreferences(value: unknown): UserModelPreferences | null {
@@ -116,7 +144,7 @@ function normalizeUserPreferences(raw: unknown): UserPreferences {
 
   return {
     chat: normalizeUserChatPreferences(raw.chat),
-    explain: normalizeUserModelPreferences(raw.explain),
+    explain: normalizeUserExplainPreferences(raw.explain),
     direct: normalizeUserModelPreferences(raw.direct),
   }
 }
@@ -161,7 +189,7 @@ export function updateUserChatPreferences(session: AuthSession, initialScrollTar
 
 function updateUserModelPreferences(
   session: AuthSession,
-  key: 'explain' | 'direct',
+  key: 'direct',
   model: string,
   reasoningEffort: ReasoningEffort
 ) {
@@ -175,8 +203,28 @@ function updateUserModelPreferences(
   return preferences[key]
 }
 
-export function updateUserExplainPreferences(session: AuthSession, model: string, reasoningEffort: ReasoningEffort) {
-  return updateUserModelPreferences(session, 'explain', model, reasoningEffort)
+export function updateUserExplainPreferences(
+  session: AuthSession,
+  model: string,
+  reasoningEffort: ReasoningEffort,
+  interceptImplementationRequests?: boolean
+) {
+  const preferences = loadUserPreferences(session)
+  const normalizedModel = getModelCapability(model).id
+  const existingInterceptImplementationRequests = preferences.explain?.interceptImplementationRequests
+
+  preferences.explain = {
+    model: normalizedModel,
+    reasoningEffort: resolveReasoningEffortForModel(normalizedModel, reasoningEffort),
+    ...((interceptImplementationRequests ?? existingInterceptImplementationRequests) === undefined
+      ? {}
+      : {
+          interceptImplementationRequests:
+            interceptImplementationRequests ?? existingInterceptImplementationRequests,
+        }),
+  }
+  saveUserPreferences(session, preferences)
+  return preferences.explain
 }
 
 export function updateUserDirectPreferences(session: AuthSession, model: string, reasoningEffort: ReasoningEffort) {

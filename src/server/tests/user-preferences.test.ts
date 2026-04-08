@@ -125,7 +125,7 @@ test('user preferences persist separately by account owner', () => {
     const bob = createSession('acct-bob')
 
     updateUserChatPreferences(alice, 'last_user_message')
-    updateUserExplainPreferences(alice, 'gpt-5.4-mini', 'high')
+    updateUserExplainPreferences(alice, 'gpt-5.4-mini', 'high', false)
     updateUserDirectPreferences(alice, 'gpt-5.3-codex', 'low')
 
     const alicePreferences = loadUserPreferences(alice)
@@ -134,6 +134,7 @@ test('user preferences persist separately by account owner', () => {
     assert.equal(alicePreferences.chat?.initialScrollTarget, 'last_user_message')
     assert.equal(alicePreferences.explain?.model, 'gpt-5.4-mini')
     assert.equal(alicePreferences.explain?.reasoningEffort, 'high')
+    assert.equal(alicePreferences.explain?.interceptImplementationRequests, false)
     assert.equal(alicePreferences.direct?.model, 'gpt-5.3-codex')
     assert.equal(alicePreferences.direct?.reasoningEffort, 'low')
     assert.equal(bobPreferences.chat, null)
@@ -167,7 +168,7 @@ test('toPublicConfig merges personal explain, direct, and chat preferences witho
     const config = createConfig()
 
     updateUserChatPreferences(alice, 'last_user_message')
-    updateUserExplainPreferences(alice, 'gpt-5.4-mini', 'high')
+    updateUserExplainPreferences(alice, 'gpt-5.4-mini', 'high', false)
     updateUserDirectPreferences(alice, 'gpt-5.3-codex', 'low')
 
     const aliceConfig = toPublicConfig(config, alice)
@@ -176,6 +177,7 @@ test('toPublicConfig merges personal explain, direct, and chat preferences witho
     assert.equal(aliceConfig.chat.initialScrollTarget, 'last_user_message')
     assert.equal(aliceConfig.explain.selectedModel, 'gpt-5.4-mini')
     assert.equal(aliceConfig.explain.selectedReasoningEffort, 'high')
+    assert.equal(aliceConfig.explain.interceptImplementationRequests, false)
     assert.equal(aliceConfig.direct.selectedModel, 'gpt-5.3-codex')
     assert.equal(aliceConfig.direct.selectedReasoningEffort, 'low')
     assert.equal(aliceConfig.requests.screening.selectedModel, 'gpt-5.3-codex-spark')
@@ -183,6 +185,7 @@ test('toPublicConfig merges personal explain, direct, and chat preferences witho
     assert.equal(bobConfig.chat.initialScrollTarget, 'bottom')
     assert.equal(bobConfig.explain.selectedModel, 'gpt-5.4')
     assert.equal(bobConfig.explain.selectedReasoningEffort, 'medium')
+    assert.equal(bobConfig.explain.interceptImplementationRequests, true)
     assert.equal(bobConfig.direct.selectedModel, 'gpt-5.4')
     assert.equal(bobConfig.direct.selectedReasoningEffort, 'medium')
   } finally {

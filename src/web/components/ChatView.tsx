@@ -15,6 +15,7 @@ import {
 } from '../lib/api'
 import {
   buildNextExplainMessages,
+  shouldInterceptImplementationRequestForExplain,
   shouldBypassRequestInterceptForExplain,
   type ChatMessageRecord,
 } from '../lib/chat-session'
@@ -399,52 +400,6 @@ function formatElapsed(ms: number) {
   return `${minutes}분 ${seconds}초 경과`
 }
 
-function isLikelyImplementationRequest(text: string) {
-  const normalized = text.trim().toLowerCase()
-  if (!normalized) {
-    return false
-  }
-
-  const actionPatterns = [
-    /구현/,
-    /수정/,
-    /변경/,
-    /추가/,
-    /고쳐/,
-    /만들/,
-    /리팩토링/,
-    /붙여/,
-    /연결/,
-    /적용/,
-    /\bimplement\b/,
-    /\bfix\b/,
-    /\bbuild\b/,
-    /\bcreate\b/,
-    /\badd\b/,
-    /\bmodify\b/,
-    /\bupdate\b/,
-    /\brefactor\b/,
-  ]
-  const contextPatterns = [
-    /버튼/,
-    /기능/,
-    /화면/,
-    /ui/,
-    /api/,
-    /컴포넌트/,
-    /페이지/,
-    /코드/,
-    /파일/,
-    /hook/,
-    /route/,
-    /테스트/,
-    /동작/,
-  ]
-
-  return actionPatterns.some((pattern) => pattern.test(normalized)) &&
-    contextPatterns.some((pattern) => pattern.test(normalized))
-}
-
 function streamStatusStyles(phase: StreamPhase) {
   if (phase === 'error') {
     return 'border-red-900/70 bg-red-950/20 text-red-100'
@@ -491,6 +446,9 @@ export function ChatView({
   const [requestInterceptInput, setRequestInterceptInput] = useState<string | null>(null)
   const [model, setModel] = useState(config.explain.selectedModel)
   const [reasoningEffort, setReasoningEffort] = useState(config.explain.selectedReasoningEffort)
+  const [interceptImplementationRequests, setInterceptImplementationRequests] = useState(
+    config.explain.interceptImplementationRequests
+  )
   const [textEffect, setTextEffect] = useState<ExplainTextEffectId>(DEFAULT_EXPLAIN_TEXT_EFFECT)
   const [streamStatus, setStreamStatus] = useState<StreamStatus>(() => createIdleStreamStatus())
   const [editingSession, setEditingSession] = useState<EditSession | null>(null)
@@ -789,7 +747,12 @@ export function ChatView({
   useEffect(() => {
     setModel(config.explain.selectedModel)
     setReasoningEffort(config.explain.selectedReasoningEffort)
-  }, [config.explain.selectedModel, config.explain.selectedReasoningEffort])
+    setInterceptImplementationRequests(config.explain.interceptImplementationRequests)
+  }, [
+    config.explain.interceptImplementationRequests,
+    config.explain.selectedModel,
+    config.explain.selectedReasoningEffort,
+  ])
 
   useEffect(() => {
     if (!selectedModelCapability) {
@@ -800,6 +763,12 @@ export function ChatView({
       setReasoningEffort(selectedModelCapability.defaultReasoningEffort)
     }
   }, [reasoningEffort, selectedModelCapability])
+
+  useEffect(() => {
+    if (!interceptImplementationRequests) {
+      setRequestInterceptInput(null)
+    }
+  }, [interceptImplementationRequests])
 
   useEffect(() => {
     threadIdRef.current = threadId
@@ -1549,7 +1518,11 @@ export function ChatView({
     }
   }
 
-  const persistExplainSettings = async (nextModel: string, nextReasoningEffort: typeof reasoningEffort) => {
+  const persistExplainSettings = async (
+    nextModel: string,
+    nextReasoningEffort: typeof reasoningEffort,
+    nextInterceptImplementationRequests: boolean
+  ) => {
     if (!projectId) {
       return
     }
@@ -1558,6 +1531,7 @@ export function ChatView({
       projectId,
       model: nextModel,
       reasoningEffort: nextReasoningEffort,
+      interceptImplementationRequests: nextInterceptImplementationRequests,
     })
     await onConfigUpdated()
   }
@@ -1655,7 +1629,10 @@ export function ChatView({
       return
     }
 
-    if (!bypassRequestIntercept && isLikelyImplementationRequest(message)) {
+    if (
+      !bypassRequestIntercept &&
+      shouldInterceptImplementationRequestForExplain(message, interceptImplementationRequests)
+    ) {
       setRequestInterceptInput(message)
       return
     }
@@ -1880,7 +1857,11 @@ export function ChatView({
                 const nextReasoningEffort = nextCapability.defaultReasoningEffort
                 setModel(nextModel)
                 setReasoningEffort(nextReasoningEffort)
-                await persistExplainSettings(nextModel, nextReasoningEffort)
+                await persistExplainSettings(
+                  nextModel,
+                  nextReasoningEffort,
+                  interceptImplementationRequests
+                )
               }}
               className="w-40 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -1896,7 +1877,11 @@ export function ChatView({
               onChange={async (e) => {
                 const nextReasoningEffort = e.target.value as typeof reasoningEffort
                 setReasoningEffort(nextReasoningEffort)
-                await persistExplainSettings(model, nextReasoningEffort)
+                await persistExplainSettings(
+                  model,
+                  nextReasoningEffort,
+                  interceptImplementationRequests
+                )
               }}
               className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -1905,6 +1890,24 @@ export function ChatView({
                   {option}
                 </option>
               ))}
+            </select>
+            <select
+              aria-label="Explain implementation request handling"
+              value={interceptImplementationRequests ? 'intercept' : 'explain_only'}
+              disabled={isStreaming || isGeneratingDraft || !canManageExplainSettings}
+              onChange={async (e) => {
+                const nextInterceptImplementationRequests = e.target.value === 'intercept'
+                setInterceptImplementationRequests(nextInterceptImplementationRequests)
+                await persistExplainSettings(
+                  model,
+                  reasoningEffort,
+                  nextInterceptImplementationRequests
+                )
+              }}
+              className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm focus:border-zinc-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <option value="intercept">자동 request 제안</option>
+              <option value="explain_only">설명만</option>
             </select>
             <select
               aria-label="Chat initial scroll target"

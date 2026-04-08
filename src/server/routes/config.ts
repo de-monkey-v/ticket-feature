@@ -191,10 +191,11 @@ configRoutes.post('/config/preferences/chat', async (c) => {
 configRoutes.post('/config/preferences/explain', async (c) => {
   const auth = getAuthSession(c)
   const config = loadConfig()
-  const { projectId, model, reasoningEffort } = await c.req.json<{
+  const { projectId, model, reasoningEffort, interceptImplementationRequests } = await c.req.json<{
     projectId?: string
     model?: string
     reasoningEffort?: ReasoningEffort
+    interceptImplementationRequests?: boolean
   }>()
   let project
 
@@ -216,10 +217,22 @@ configRoutes.post('/config/preferences/explain', async (c) => {
     return c.json({ error: 'Explain model and reasoning effort are required' }, 400)
   }
 
+  if (
+    interceptImplementationRequests !== undefined &&
+    typeof interceptImplementationRequests !== 'boolean'
+  ) {
+    return c.json({ error: 'Explain request intercept preference must be a boolean' }, 400)
+  }
+
   try {
     const normalizedModel = getModelCapability(model).id
     const normalizedReasoningEffort = resolveReasoningEffortForModel(normalizedModel, reasoningEffort)
-    updateUserExplainPreferences(auth, normalizedModel, normalizedReasoningEffort)
+    updateUserExplainPreferences(
+      auth,
+      normalizedModel,
+      normalizedReasoningEffort,
+      interceptImplementationRequests
+    )
     return c.json(toPublicConfig(loadConfig(), auth))
   } catch (error: any) {
     return c.json({ error: error.message || 'Failed to save explain preferences' }, 400)

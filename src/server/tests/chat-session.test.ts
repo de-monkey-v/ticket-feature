@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildNextExplainMessages,
   normalizeStoredMessages,
+  shouldInterceptImplementationRequestForExplain,
   shouldBypassRequestInterceptForExplain,
 } from '../../web/lib/chat-session.js'
 
@@ -101,6 +102,30 @@ test('shouldBypassRequestInterceptForExplain keeps the original question when us
     shouldBypassRequestInterceptForExplain(
       '로그인이 왜 실패하는지 원인을 알려줘',
       '이 버튼 동작을 수정하고 API 연결까지 해줘'
+    ),
+    false
+  )
+})
+
+test('shouldInterceptImplementationRequestForExplain only intercepts implementation requests when enabled', () => {
+  assert.equal(
+    shouldInterceptImplementationRequestForExplain(
+      '이 버튼 동작을 수정하고 API 연결까지 해줘',
+      true
+    ),
+    true
+  )
+  assert.equal(
+    shouldInterceptImplementationRequestForExplain(
+      '이 버튼 동작을 수정하고 API 연결까지 해줘',
+      false
+    ),
+    false
+  )
+  assert.equal(
+    shouldInterceptImplementationRequestForExplain(
+      '로그인이 왜 실패하는지 원인을 알려줘',
+      true
     ),
     false
   )

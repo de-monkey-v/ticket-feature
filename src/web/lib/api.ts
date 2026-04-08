@@ -57,6 +57,7 @@ export interface AppConfig {
     }>
     selectedModel: string
     selectedReasoningEffort: ModelReasoningEffort
+    interceptImplementationRequests: boolean
   }
   direct: {
     availableModels: Array<{
@@ -868,6 +869,7 @@ export async function updateExplainSettings(data: {
   projectId: string
   model: string
   reasoningEffort: ModelReasoningEffort
+  interceptImplementationRequests?: boolean
 }): Promise<AppConfig> {
   const res = await authorizedFetch('/api/config/preferences/explain', {
     method: 'POST',

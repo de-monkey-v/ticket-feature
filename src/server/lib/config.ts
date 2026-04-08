@@ -100,7 +100,7 @@ export interface PublicProjectConfig {
   deletable: boolean
 }
 
-export interface PublicExplainConfig {
+export interface PublicModelSelectionConfig {
   availableModels: Array<{
     id: string
     label: string
@@ -109,6 +109,10 @@ export interface PublicExplainConfig {
   }>
   selectedModel: string
   selectedReasoningEffort: ReasoningEffort
+}
+
+export interface PublicExplainConfig extends PublicModelSelectionConfig {
+  interceptImplementationRequests: boolean
 }
 
 export interface PublicChatConfig {
@@ -142,7 +146,7 @@ export interface PublicAppConfig {
   }
   chat: PublicChatConfig
   explain: PublicExplainConfig
-  direct: PublicExplainConfig
+  direct: PublicModelSelectionConfig
   requests: {
     screening: PublicRequestScreeningConfig
   }

@@ -98,6 +98,7 @@ export function toPublicConfig(config: FlowsConfig, session: AuthSession): Publi
       })),
       selectedModel: getModelCapability(explainSelection.selectedModel).id,
       selectedReasoningEffort: explainSelection.selectedReasoningEffort,
+      interceptImplementationRequests: preferences.explain?.interceptImplementationRequests ?? true,
     },
     direct: {
       availableModels: listModelCapabilities(directSelection.selectedModel).map((capability) => ({

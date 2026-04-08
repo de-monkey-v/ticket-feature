@@ -130,6 +130,7 @@ test('preference routes persist open-session explain, direct, and chat selection
         projectId,
         model: 'gpt-5.4-mini',
         reasoningEffort: 'high',
+        interceptImplementationRequests: false,
       }),
     })
 
@@ -137,6 +138,22 @@ test('preference routes persist open-session explain, direct, and chat selection
     const explainPayload = await explainResponse.json()
     assert.equal(explainPayload.explain.selectedModel, 'gpt-5.4-mini')
     assert.equal(explainPayload.explain.selectedReasoningEffort, 'high')
+    assert.equal(explainPayload.explain.interceptImplementationRequests, false)
+
+    const explainCompatibilityResponse = await app.request('http://localhost/api/config/preferences/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        projectId,
+        model: 'gpt-5.4-mini',
+        reasoningEffort: 'medium',
+      }),
+    })
+
+    assert.equal(explainCompatibilityResponse.status, 200)
+    const explainCompatibilityPayload = await explainCompatibilityResponse.json()
+    assert.equal(explainCompatibilityPayload.explain.selectedReasoningEffort, 'medium')
+    assert.equal(explainCompatibilityPayload.explain.interceptImplementationRequests, false)
 
     const directResponse = await app.request('http://localhost/api/config/preferences/direct', {
       method: 'POST',
@@ -175,6 +192,7 @@ test('preference routes persist open-session explain, direct, and chat selection
     const persisted = JSON.parse(readFileSync(preferencesPath, 'utf-8'))
     assert.equal(persisted.chat.initialScrollTarget, 'last_user_message')
     assert.equal(persisted.explain.model, 'gpt-5.4-mini')
+    assert.equal(persisted.explain.interceptImplementationRequests, false)
     assert.equal(persisted.direct.model, 'gpt-5.3-codex')
   } finally {
     if (previousDataDir === undefined) {
